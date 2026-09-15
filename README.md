@@ -33,6 +33,8 @@ Veya is a durable execution runtime for AI agents. The agent decides *what* shou
 
 It runs locally. No cloud account, no hosted control plane — `docker compose up` and a `pip install`.
 
+> **New here?** Read [**docs/architecture-primer.md**](docs/architecture-primer.md) first. It walks through the execution model in plain English, assuming only that you know what a transaction, a worker, and a queue are. This README is the specification; the primer is the explanation.
+
 ---
 
 ## 2. The Problem
@@ -360,6 +362,18 @@ Because `idempotency_key` is unique in the database, a retried attempt cannot cr
 | `UNRECONCILABLE` | Escalate to a human. Never auto-retry. |
 
 A tool that is neither idempotent nor queryable cannot be made exactly-once by any runtime. Veya's contribution is to make that fact explicit and fail loudly rather than silently guessing.
+
+**Key retention is the provider's, not ours.** Effect records persist far longer than most providers honor an idempotency key — Stripe expires keys after 24 hours, and many services are less generous. A `QUERYABLE` effect reconciled after that window returns "not found," which means *the provider forgot*, not *it never happened*. Re-sending on that basis is precisely the duplicate this design exists to prevent.
+
+Every adapter therefore declares the window in which its key is actually meaningful:
+
+```python
+@tool(effect=EffectClass.QUERYABLE, key_ttl=timedelta(hours=24))
+def send_invoice(customer_id: int, *, idempotency_key: str) -> dict:
+    ...
+```
+
+Past `key_ttl`, an unresolved effect escalates to a human rather than reconciling automatically. Half of an exactly-once guarantee lives in someone else's system, under someone else's retention policy; the tool contract has to encode that rather than assume it away.
 
 ### 5.7 Leases & fencing
 
@@ -914,6 +928,8 @@ Outcome: **one refund, no lost work, no human intervention.**
 - Deploying a new agent version does not migrate in-flight runs. Runs pin `agent_version` and complete under the version they started on.
 - Large payloads are stored inline. Payload offloading to blob storage is on the roadmap; very large tool results will inflate the database until then.
 - Effect retention is intentionally longer than event retention. Compacting effects too aggressively reintroduces duplicate-side-effect risk.
+- Cancellation is cooperative and forward-looking. `run.cancel()` prevents the *next* durable step; it does not interrupt an effect already in flight and does not reverse one already committed. Marking a run `CANCELLED` after an email has been sent records a decision, not an undo. Reversing a committed effect requires an authored compensation.
+- Exactly-once is bounded by the provider's key retention, not ours. An effect unresolved past its tool's `key_ttl` escalates rather than reconciling (§5.6).
 
 ---
 
@@ -935,7 +951,7 @@ Outcome: **one refund, no lost work, no human intervention.**
 | **Duplicate side effects** | Must be zero. The primary correctness metric. |
 | Lost work | Runs stuck in a non-terminal state after chaos. Must be zero. |
 
-**Queue comparison.** JetStream is the default, not a conclusion. The dispatch layer sits behind an interface so `PostgreSQL SKIP LOCKED` (no external broker, simplest local setup) and `Redis Streams` can be measured on identical workloads. Kafka is deliberately excluded: it is a log, not a work queue, and lacks the per-message ack, visibility timeout, and selective redelivery this design depends on.
+**Queue comparison.** NATS JetStream is the decided transport for distributed dispatch. The dispatch layer nonetheless sits behind an interface, for two reasons that outlive the decision: `PostgreSQL SKIP LOCKED` is the backend Layers 1–2 run on, since proving the execution model requires no broker at all, and keeping alternatives runnable is what makes this comparison measurable rather than asserted. `PostgreSQL SKIP LOCKED` and `Redis Streams` are benchmarked on identical workloads so the cost of the broker is a number rather than an assumption. Kafka is deliberately excluded: it is a log, not a work queue, and lacks the per-message ack, visibility timeout, and selective redelivery this design depends on.
 
 Correctness metrics are reported under chaos, not just at steady state. Throughput on a system that duplicates refunds is not a result.
 
@@ -1045,6 +1061,7 @@ veya/
 │   ├── simulation/         # deterministic simulation harness
 │   └── integration/
 ├── docs/
+│   ├── architecture-primer.md   # plain-English walkthrough of the execution model
 │   ├── architecture.md
 │   ├── data-model.md
 │   └── tool-contract.md
@@ -1055,6 +1072,9 @@ veya/
 ---
 
 ## 16. Design Decisions & Tradeoffs
+
+**Safety mechanisms must be exact; liveness mechanisms may be approximate.**
+This is the principle the rest of the design is organized around. Safety properties — no duplicate external effect, no stale write accepted, no run advanced twice, no committed work lost — are enforced by mechanisms that cannot be partially applied: fencing tokens, unique constraints, version CAS, database transactions. Liveness properties — a dead worker's task is eventually reclaimed, a pending task eventually runs, a committed outbox row is eventually published — are served by mechanisms that are allowed to be wrong occasionally: lease expiry, the reaper, retries, the relay. This is what makes an imperfect lease acceptable. A lease that expires while its owner is healthy costs duplicated work and latency, which is a liveness defect and survivable. A fencing check that is merely usually applied is a safety defect and is not. When evaluating any new mechanism, the first question is which of the two it is, because that determines how exact it has to be.
 
 **PostgreSQL is authoritative for both state and history; JetStream carries only work.**
 The alternative — JetStream as the event log with PostgreSQL as a projection — is a legitimate event-sourcing design, but it makes every state read depend on projection lag and requires the projector itself to be crash-recoverable and exactly-once. Keeping truth in one transactional store means a task, its event, and its delivery intent commit atomically. The cost is that PostgreSQL becomes the throughput ceiling; the benefit is that there is exactly one place to look when answering "what is true?"
