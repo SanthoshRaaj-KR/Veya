@@ -20,6 +20,10 @@ build: ## Compile all binaries into ./bin
 test: ## Run unit tests (no Docker required)
 	$(GO) test $(PKG)
 
+.PHONY: test-race
+test-race: ## Run unit tests under the race detector (needs a C toolchain)
+	CGO_ENABLED=1 $(GO) test -race -count=2 $(PKG)
+
 .PHONY: test-integration
 test-integration: ## Run tests against a live PostgreSQL (needs `make up`)
 	VEYA_TEST_DSN="$(VEYA_DSN)" $(GO) test -tags=integration -count=1 $(PKG)
