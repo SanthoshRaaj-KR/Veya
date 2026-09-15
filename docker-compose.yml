@@ -1,0 +1,45 @@
+# Local infrastructure for Veya.
+#
+#   postgres  — the authoritative store: runs, events, tasks, effects, leases.
+#   nats      — task delivery only. Unused until Layer 3; declared now so the
+#               local environment does not change shape when dispatch moves
+#               off Postgres.
+#
+# Usage: `make up` / `make down`.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: veya-postgres
+    environment:
+      POSTGRES_USER: veya
+      POSTGRES_PASSWORD: veya
+      POSTGRES_DB: veya
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U veya -d veya"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  nats:
+    image: nats:2-alpine
+    container_name: veya-nats
+    command: ["--jetstream", "--store_dir=/data"]
+    ports:
+      - "4222:4222"   # client
+      - "8222:8222"   # monitoring
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  natsdata:
