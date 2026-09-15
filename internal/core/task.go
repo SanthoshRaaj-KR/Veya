@@ -33,18 +33,22 @@ type Task struct {
 	Status      TaskStatus
 	Attempt     int
 	MaxAttempts int
-	Result      json.RawMessage
 	LastError   string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	CompletedAt *time.Time
 }
 
-// TaskOutcome carries the result of a terminal task transition. Exactly one
-// of Result or Error is meaningful, determined by the target status.
+// TaskOutcome carries the operational detail of a task transition.
+//
+// Deliberately thin. A task's result is not here and is not a column: it
+// lives in the TASK_COMPLETED event, which is the authoritative record and
+// the one replay reads. Keeping a second copy on the task row would be two
+// records asserting the same fact, which is the drift README section 16
+// rejects. LastError is the one exception, present because operators need it
+// without reading history, and README section 8.1 sanctions it.
 type TaskOutcome struct {
-	Result json.RawMessage
-	Error  string
+	Error string
 }
 
 // IsTerminal reports whether the task will not be worked on again.

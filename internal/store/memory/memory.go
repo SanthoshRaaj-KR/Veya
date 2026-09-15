@@ -281,17 +281,11 @@ func (t *tx) TransitionTask(_ context.Context, id core.TaskID, from, to core.Tas
 	now := t.clock.Now()
 	task.Status = to
 	task.UpdatedAt = now
-	if out.Result != nil {
-		task.Result = out.Result
-	}
 	if out.Error != "" {
 		task.LastError = out.Error
 	}
-	switch to {
-	case core.TaskRunning:
+	if to == core.TaskRunning {
 		task.Attempt++
-	case core.TaskPending:
-		task.Result, task.LastError = nil, out.Error
 	}
 	if to.IsTerminal() {
 		done := now
