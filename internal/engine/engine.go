@@ -24,22 +24,36 @@ import (
 	"github.com/santhoshraajkr/veya/internal/core"
 )
 
-// Engine advances runs.
+// Engine advances runs for exactly one agent.
+//
+// The agent binding is not incidental. A decider only makes sense for the
+// agent it was written for, so an engine must refuse to advance a run
+// belonging to a different one — otherwise a process serving agent A will
+// happily drive agent B's run through A's steps, which is silent corruption
+// rather than a visible failure.
 type Engine struct {
-	store      core.Store
-	dispatcher core.Dispatcher
-	decider    core.Decider
-	ids        core.IDGen
-	log        *slog.Logger
+	store        core.Store
+	dispatcher   core.Dispatcher
+	decider      core.Decider
+	ids          core.IDGen
+	agent        string
+	agentVersion string
+	log          *slog.Logger
 }
 
-// Config wires an Engine. Every field is required.
+// Config wires an Engine. Every field except Logger is required.
 type Config struct {
 	Store      core.Store
 	Dispatcher core.Dispatcher
 	Decider    core.Decider
 	IDGen      core.IDGen
-	Logger     *slog.Logger
+
+	// Agent names the agent this engine serves, and AgentVersion is pinned
+	// onto every run it starts. Runs for any other agent are left alone.
+	Agent        string
+	AgentVersion string
+
+	Logger *slog.Logger
 }
 
 // New validates the configuration and returns an Engine.
@@ -53,6 +67,10 @@ func New(cfg Config) (*Engine, error) {
 		return nil, errors.New("engine: Decider is required")
 	case cfg.IDGen == nil:
 		return nil, errors.New("engine: IDGen is required")
+	case cfg.Agent == "":
+		return nil, errors.New("engine: Agent is required")
+	case cfg.AgentVersion == "":
+		return nil, errors.New("engine: AgentVersion is required")
 	}
 
 	log := cfg.Logger
@@ -60,17 +78,23 @@ func New(cfg Config) (*Engine, error) {
 		log = slog.Default()
 	}
 	return &Engine{
-		store:      cfg.Store,
-		dispatcher: cfg.Dispatcher,
-		decider:    cfg.Decider,
-		ids:        cfg.IDGen,
-		log:        log,
+		store:        cfg.Store,
+		dispatcher:   cfg.Dispatcher,
+		decider:      cfg.Decider,
+		ids:          cfg.IDGen,
+		agent:        cfg.Agent,
+		agentVersion: cfg.AgentVersion,
+		log:          log,
 	}, nil
 }
 
+// Agent reports which agent this engine serves.
+func (e *Engine) Agent() string { return e.agent }
+
 // StartRun creates a run and drives it to its first decision.
-func (e *Engine) StartRun(ctx context.Context, agentName, agentVersion string, input json.RawMessage) (core.RunID, error) {
+func (e *Engine) StartRun(ctx context.Context, input json.RawMessage) (core.RunID, error) {
 	id := e.ids.NewRunID()
+	agentName, agentVersion := e.agent, e.agentVersion
 
 	err := e.store.RunInTx(ctx, func(ctx context.Context, tx core.Tx) error {
 		run := core.Run{
@@ -113,6 +137,14 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 		return fmt.Errorf("advance %s: %w", runID, err)
 	}
 	if run.Status.IsTerminal() {
+		return nil
+	}
+	// This engine's decider only knows this engine's agent. Advancing someone
+	// else's run would drive it through the wrong steps and record the result
+	// as though it were correct.
+	if run.AgentName != e.agent {
+		e.log.Debug("skipping run for another agent",
+			"run_id", runID, "run_agent", run.AgentName, "this_agent", e.agent)
 		return nil
 	}
 

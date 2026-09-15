@@ -149,7 +149,15 @@ func (w *Worker) execute(ctx context.Context, id core.TaskID) {
 // an UNKNOWN effect rather than a lost update, which is the case this
 // placeholder exists to grow into.
 func (w *Worker) report(_ context.Context, err error, id core.TaskID) {
-	if err != nil {
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// Shutdown, not a fault. The task stays RUNNING and the next process
+		// to scan recovers it. Logging this at ERROR trains operators to
+		// ignore ERROR.
+		w.log.Debug("task outcome interrupted by shutdown", "task_id", id)
+	default:
 		w.log.Error("failed to record task outcome", "task_id", id, "error", err)
 	}
 }

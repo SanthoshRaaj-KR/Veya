@@ -1032,42 +1032,60 @@ Every scenario asserts the same invariants:
 
 ## 15. Project Structure
 
+Entries marked ✅ exist today; the rest arrive with the layer that needs them.
+
 ```
 veya/
 ├── cmd/
-│   ├── veya-runtime/       # execution engine + outbox relay
-│   ├── veya-worker/        # worker process
-│   └── veya/               # CLI
+│   ├── veya-runtime/    ✅ # execution engine + workers (+ outbox relay, L3)
+│   ├── veya-worker/        # standalone worker process (L3, when workers
+│   │                       #   can live outside the runtime)
+│   └── veya/            ✅ # operator CLI: migrate, run start/show/history
 ├── internal/
-│   ├── engine/             # run lifecycle, advancement, replay
-│   ├── store/              # PostgreSQL access layer
-│   │   └── migrations/
-│   ├── outbox/             # transactional outbox relay
-│   ├── dispatch/           # task delivery interface
-│   │   ├── jetstream/
-│   │   ├── postgres/       # SKIP LOCKED implementation
-│   │   └── redis/
-│   ├── effects/            # effect ledger + reconciliation
-│   ├── lease/              # leases, fencing, reaper
-│   ├── events/             # event model, append, replay
-│   └── telemetry/          # metrics, tracing, structured logs
+│   ├── core/            ✅ # domain types + port interfaces; imports nothing
+│   │   └── storetest/   ✅ # contract suite every Store adapter must pass
+│   ├── engine/          ✅ # run lifecycle, advancement, recovery scan
+│   ├── worker/          ✅ # claim → execute → report
+│   ├── decider/         ✅ # what happens next (static now, LLM in L4)
+│   ├── tool/            ✅ # task type → handler registry
+│   ├── wiring/          ✅ # composition root; the only place naming adapters
+│   ├── clock/           ✅ # system + virtual time
+│   ├── idgen/           ✅ # random + deterministic identity
+│   ├── store/
+│   │   ├── memory/      ✅ # in-process adapter
+│   │   ├── postgres/    ✅ # the authoritative adapter
+│   │   └── migrations/  ✅ # embedded SQL + runner
+│   ├── outbox/             # transactional outbox relay (L3)
+│   ├── dispatch/
+│   │   ├── inproc/      ✅ # channel between engine and worker
+│   │   ├── jetstream/      # (L3)
+│   │   ├── postgres/       # SKIP LOCKED implementation (L3)
+│   │   └── redis/          # (L3, benchmark comparison)
+│   ├── effects/            # effect ledger + reconciliation (L2)
+│   ├── lease/              # leases, fencing, reaper (L2)
+│   └── telemetry/          # metrics, tracing, structured logs (L6)
 ├── sdk/
-│   └── python/
-│       └── veya/           # Runtime, @agent, @tool, ctx primitives
+│   └── python/             # Runtime, @agent, @tool, ctx primitives (L4)
 ├── examples/
-│   └── refund_agent.py
+│   └── refund_agent.py     # (L4)
 ├── test/
-│   ├── chaos/              # scripted failure scenarios
-│   ├── simulation/         # deterministic simulation harness
-│   └── integration/
+│   ├── chaos/              # scripted failure scenarios (L7)
+│   ├── simulation/         # deterministic simulation harness (L7)
+│   └── integration/        # (L7; adapter integration tests currently live
+│                           #   beside their package, behind a build tag)
 ├── docs/
-│   ├── architecture-primer.md   # plain-English walkthrough of the execution model
+│   ├── architecture-primer.md ✅ # plain-English walkthrough
 │   ├── architecture.md
 │   ├── data-model.md
 │   └── tool-contract.md
-├── docker-compose.yml
-└── Makefile
+├── docker-compose.yml   ✅ # PostgreSQL (:5433) + NATS
+├── Makefile             ✅ # build, test, migrate, up/down, demo
+└── go.mod               ✅
 ```
+
+Tests sit next to the code they cover. Unit tests need no Docker and run in
+milliseconds against the memory adapter; anything needing a live database is
+behind `//go:build integration` and runs via `make test-integration`.
 
 ---
 
@@ -1107,10 +1125,20 @@ Not for performance reasons. Kafka is a distributed log without per-message ackn
 
 ## 17. Roadmap
 
-**Layer 1 — Foundation**
-- [ ] Run and task lifecycle in PostgreSQL
-- [ ] Single worker, single tool, end to end
-- [ ] Event history with conditional appends
+**Layer 1 — Foundation** ✅ *complete*
+- [x] Run and task lifecycle in PostgreSQL
+- [x] Single worker, single tool, end to end
+- [x] Event history with conditional appends
+
+> Runnable now: `make up && make migrate && make demo`, or `make demo-memory`
+> for the same run with no Docker. Both store adapters pass one contract suite
+> (`internal/core/storetest`), so the engine cannot tell them apart.
+>
+> Layer 1 deliberately has no effect ledger, no leases, and no broker. Task
+> delivery is an in-process channel, and duplicate suppression rests entirely
+> on the conditional `PENDING → RUNNING` claim — which is enough to make
+> at-least-once delivery safe, and is proven by a test that delivers one task
+> 21 times across 4 workers and executes it once.
 
 **Layer 2 — Effect safety** *(the core value proposition)*
 - [ ] Effect ledger with `UNKNOWN` state

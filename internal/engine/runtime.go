@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -92,25 +93,48 @@ func (r *Runtime) Run(ctx context.Context) error {
 func (r *Runtime) ScanOnce(ctx context.Context) {
 	tasks, err := r.store.PendingTasks(ctx, r.batch)
 	if err != nil {
-		r.log.Error("scan: list pending tasks", "error", err)
+		r.logFailure("scan: list pending tasks", err)
 	}
 	for _, t := range tasks {
 		if err := r.dispatcher.Publish(ctx, t.ID); err != nil {
-			r.log.Error("scan: republish", "task_id", t.ID, "error", err)
+			r.logFailure("scan: republish", err, "task_id", t.ID)
 		}
 	}
 
 	runs, err := r.store.RunsAwaitingAdvance(ctx, r.batch)
 	if err != nil {
-		r.log.Error("scan: list runs awaiting advance", "error", err)
+		r.logFailure("scan: list runs awaiting advance", err)
 	}
 	for _, id := range runs {
 		if err := r.engine.Advance(ctx, id); err != nil {
-			r.log.Error("scan: advance", "run_id", id, "error", err)
+			r.logFailure("scan: advance", err, "run_id", id)
+			// A cancelled context means shutdown, not a bad run. Abandon the
+			// pass rather than grinding through the rest to fail identically.
+			if isShutdown(err) {
+				return
+			}
 		}
 	}
 
 	if len(tasks) > 0 || len(runs) > 0 {
 		r.log.Debug("scan complete", "republished", len(tasks), "advanced", len(runs))
 	}
+}
+
+// logFailure records a scan failure, quietly if it is just shutdown.
+//
+// Work interrupted by a cancelled context is not lost — it is committed in the
+// store and the next process to scan will find it. Logging that at ERROR
+// trains operators to ignore ERROR, which is worse than saying nothing.
+func (r *Runtime) logFailure(msg string, err error, args ...any) {
+	args = append(args, "error", err)
+	if isShutdown(err) {
+		r.log.Debug(msg+" (interrupted by shutdown)", args...)
+		return
+	}
+	r.log.Error(msg, args...)
+}
+
+func isShutdown(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }

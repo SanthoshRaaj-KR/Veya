@@ -37,7 +37,7 @@ func TestRunCompletesEndToEnd(t *testing.T) {
 	h.registerEcho("exclaim")
 	h.start(t)
 
-	runID, err := h.engine.StartRun(context.Background(), "demo", "v1", json.RawMessage(`{"x":1}`))
+	runID, err := h.engine.StartRun(context.Background(), json.RawMessage(`{"x":1}`))
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestFailedTaskRetriesThenSucceeds(t *testing.T) {
 	})
 	h.start(t)
 
-	runID, err := h.engine.StartRun(context.Background(), "flaky-agent", "v1", nil)
+	runID, err := h.engine.StartRun(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestExhaustedTaskFailsTheRun(t *testing.T) {
 	})
 	h.start(t)
 
-	runID, err := h.engine.StartRun(context.Background(), "broken-agent", "v1", nil)
+	runID, err := h.engine.StartRun(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestUnknownToolFailsTheRun(t *testing.T) {
 	))
 	h.start(t)
 
-	runID, err := h.engine.StartRun(context.Background(), "bad-agent", "v1", nil)
+	runID, err := h.engine.StartRun(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestScanRecoversUndeliveredTask(t *testing.T) {
 	h.registerEcho("upper")
 
 	// Start the run with delivery broken. The task commits; nothing arrives.
-	runID, err := h.engine.StartRun(context.Background(), "recovered", "v1", nil)
+	runID, err := h.engine.StartRun(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestDuplicateDeliveryExecutesOnce(t *testing.T) {
 	// Several workers, so duplicates land on different ones.
 	h.startWorkers(t, 4)
 
-	runID, err := h.engine.StartRun(context.Background(), "dup", "v1", nil)
+	runID, err := h.engine.StartRun(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
@@ -253,6 +253,9 @@ func TestDuplicateDeliveryExecutesOnce(t *testing.T) {
 
 // --- harness --------------------------------------------------------------
 
+// testAgent is the agent every harness engine serves.
+const testAgent = "test-agent"
+
 type harness struct {
 	store      core.Store
 	dispatcher core.Dispatcher
@@ -275,11 +278,13 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 	tools := tool.New()
 
 	eng, err := engine.New(engine.Config{
-		Store:      store,
-		Dispatcher: disp,
-		Decider:    d,
-		IDGen:      idgen.NewSequential(),
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store:        store,
+		Dispatcher:   disp,
+		Decider:      d,
+		IDGen:        idgen.NewSequential(),
+		Agent:        testAgent,
+		AgentVersion: "v1",
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
@@ -426,3 +431,54 @@ func (d *droppingDispatcher) Claim(ctx context.Context) (core.TaskID, error) {
 }
 
 func (d *droppingDispatcher) Close() error { return d.inner.Close() }
+
+// TestEngineIgnoresOtherAgentsRuns is a regression test.
+//
+// A live run against PostgreSQL found the demo runtime advancing a run left
+// behind by the contract suite — a run belonging to agent "suite" was driven
+// through the meeting assistant's steps because RunsAwaitingAdvance returns
+// every stalled run regardless of who owns it. Nothing failed loudly; the
+// wrong work simply happened and was recorded as correct.
+//
+// An engine now advances only its own agent's runs.
+func TestEngineIgnoresOtherAgentsRuns(t *testing.T) {
+	h := newHarness(t, decider.NewStatic(
+		decider.Step{Tool: "upper", Payload: json.RawMessage(`{}`)},
+	))
+	h.registerEcho("upper")
+
+	// A run belonging to somebody else, in exactly the state the recovery scan
+	// looks for: RUNNING with no tasks outstanding.
+	foreign := core.RunID("foreign-run")
+	err := h.store.RunInTx(context.Background(), func(ctx context.Context, tx core.Tx) error {
+		return tx.CreateRun(ctx, core.Run{
+			ID:           foreign,
+			AgentName:    "some-other-agent",
+			AgentVersion: "v9",
+			Status:       core.RunRunning,
+		})
+	})
+	if err != nil {
+		t.Fatalf("create foreign run: %v", err)
+	}
+
+	h.start(t)
+	h.runtime.ScanOnce(context.Background())
+	time.Sleep(20 * time.Millisecond)
+
+	run, err := h.engine.Run(context.Background(), foreign)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if run.Version != 0 {
+		t.Fatalf("foreign run advanced to version %d; an engine must not touch another agent's run", run.Version)
+	}
+
+	tasks, err := h.engine.Tasks(context.Background(), foreign)
+	if err != nil {
+		t.Fatalf("Tasks: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Fatalf("engine created %d tasks on another agent's run", len(tasks))
+	}
+}
