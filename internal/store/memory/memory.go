@@ -200,6 +200,14 @@ type tx struct {
 	clock core.Clock
 }
 
+func (t *tx) GetTask(_ context.Context, id core.TaskID) (core.Task, error) {
+	task, ok := t.st.tasks[id]
+	if !ok {
+		return core.Task{}, fmt.Errorf("task %s: %w", id, core.ErrNotFound)
+	}
+	return task, nil
+}
+
 func (t *tx) CreateRun(_ context.Context, r core.Run) error {
 	if _, exists := t.st.runs[r.ID]; exists {
 		return fmt.Errorf("run %s: %w", r.ID, core.ErrConflict)

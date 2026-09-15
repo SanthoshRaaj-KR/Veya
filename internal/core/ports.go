@@ -44,6 +44,11 @@ type Store interface {
 // transaction type ever appears in a signature the engine can see. An adapter
 // that needed to expose *sql.Tx here would be telling us the port is wrong.
 type Tx interface {
+	// GetTask reads a task inside the transaction. Needed so that a caller
+	// which both inspects and mutates a task sees one consistent view rather
+	// than reading before the transaction and acting on a stale answer.
+	GetTask(ctx context.Context, id TaskID) (Task, error)
+
 	CreateRun(ctx context.Context, r Run) error
 
 	// AdvanceRun applies next only if the run is still at expectedVersion,

@@ -16,19 +16,57 @@
 //
 // A store that quietly permits any of these to happen twice is broken in a way
 // that would not show up until a duplicate side effect reached a customer.
+//
+// # JSON documents round-trip semantically, not byte for byte
+//
+// A store may return a document that differs textually from the one written.
+// PostgreSQL JSONB normalizes whitespace, orders keys by its own rule, and
+// drops duplicate keys; the in-memory adapter preserves the exact bytes. Both
+// are conforming, so this suite compares documents by value.
+//
+// The contract is therefore: payloads are JSON documents, not byte strings.
+// Nothing may depend on their exact encoding — which is another reason
+// idempotency keys are derived from logical position rather than by hashing a
+// request body, since the same document can have two encodings and would hash
+// to two different keys.
 package storetest
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/santhoshraajkr/veya/internal/core"
 )
 
 // NewStore builds an empty store for a single test.
 type NewStore func(t *testing.T) core.Store
+
+// TickingClock returns a clock that advances one millisecond per read.
+//
+// Every adapter's tests use it, so that records created in sequence get
+// distinct ordered timestamps without depending on wall-clock resolution — on
+// Windows that is ~15ms, which is long enough for several inserts to share a
+// timestamp and make ordering assertions flap.
+func TickingClock() core.Clock {
+	return &ticking{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+}
+
+type ticking struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *ticking) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(time.Millisecond)
+	return c.now
+}
 
 // RunStoreSuite runs the full contract against one adapter.
 func RunStoreSuite(t *testing.T, newStore NewStore) {
@@ -90,9 +128,7 @@ func testRunLifecycle(t *testing.T, s core.Store) {
 	if got.Version != 1 {
 		t.Fatalf("version = %d, want 1 after one advance", got.Version)
 	}
-	if string(got.Output) != string(out) {
-		t.Fatalf("output = %s, want %s", got.Output, out)
-	}
+	assertJSONEqual(t, "output", got.Output, out)
 	if got.CompletedAt == nil {
 		t.Fatal("terminal run must have CompletedAt set")
 	}
@@ -426,6 +462,23 @@ func mustTx(t *testing.T, s core.Store, fn func(context.Context, core.Tx) error)
 	t.Helper()
 	if err := s.RunInTx(context.Background(), fn); err != nil {
 		t.Fatalf("RunInTx: %v", err)
+	}
+}
+
+// assertJSONEqual compares two documents by value, because a conforming store
+// may re-encode them. See the package comment.
+func assertJSONEqual(t *testing.T, field string, got, want json.RawMessage) {
+	t.Helper()
+
+	var gotVal, wantVal any
+	if err := json.Unmarshal(got, &gotVal); err != nil {
+		t.Fatalf("%s: stored value is not valid JSON (%s): %v", field, got, err)
+	}
+	if err := json.Unmarshal(want, &wantVal); err != nil {
+		t.Fatalf("%s: expected value is not valid JSON (%s): %v", field, want, err)
+	}
+	if !reflect.DeepEqual(gotVal, wantVal) {
+		t.Fatalf("%s = %s, want %s (compared by value)", field, got, want)
 	}
 }
 

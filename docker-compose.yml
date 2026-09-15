@@ -16,7 +16,11 @@ services:
       POSTGRES_PASSWORD: veya
       POSTGRES_DB: veya
     ports:
-      - "5432:5432"
+      # 5433 on the host, not 5432: a developer machine very often already has
+      # PostgreSQL listening on the default port, and the failure mode when it
+      # does is silent — you connect to the wrong database and get a confusing
+      # error about a missing role rather than a refused connection.
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

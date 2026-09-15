@@ -2,7 +2,7 @@
 
 BIN       := bin
 PKG       := ./...
-VEYA_DSN  ?= postgres://veya:veya@localhost:5432/veya?sslmode=disable
+VEYA_DSN  ?= postgres://veya:veya@localhost:5433/veya?sslmode=disable
 
 # The module cache is authoritative; nothing here reaches the network.
 GO := GOFLAGS=-mod=mod go
