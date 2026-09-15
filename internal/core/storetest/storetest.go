@@ -40,7 +40,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // NewStore builds an empty store for a single test.

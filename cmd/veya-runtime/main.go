@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/santhoshraajkr/veya/internal/core"
-	"github.com/santhoshraajkr/veya/internal/wiring"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/wiring"
 )
 
 func main() {

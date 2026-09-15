@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // Engine is what a worker needs from the runtime.

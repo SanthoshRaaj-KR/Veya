@@ -24,7 +24,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // Dispatcher hands task identities from publisher to claimer over a channel.

@@ -17,7 +17,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // Store keeps all state in memory, guarded by a single mutex.

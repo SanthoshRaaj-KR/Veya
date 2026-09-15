@@ -20,15 +20,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/santhoshraajkr/veya/internal/clock"
-	"github.com/santhoshraajkr/veya/internal/core"
-	"github.com/santhoshraajkr/veya/internal/dispatch/inproc"
-	"github.com/santhoshraajkr/veya/internal/engine"
-	"github.com/santhoshraajkr/veya/internal/idgen"
-	"github.com/santhoshraajkr/veya/internal/store/memory"
-	"github.com/santhoshraajkr/veya/internal/store/postgres"
-	"github.com/santhoshraajkr/veya/internal/tool"
-	"github.com/santhoshraajkr/veya/internal/worker"
+	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/dispatch/inproc"
+	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
+	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
+	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
+	"github.com/SanthoshRaaj-KR/Veya/internal/worker"
 )
 
 // Store kinds.

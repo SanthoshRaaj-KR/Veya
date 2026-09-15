@@ -959,46 +959,55 @@ Correctness metrics are reported under chaos, not just at steady state. Throughp
 
 ## 13. Running Locally
 
-Veya is designed to run entirely on one machine. No cloud account, no hosted control plane.
+Veya runs entirely on one machine. No cloud account, no hosted control plane.
 
-**Requirements:** Docker, Go 1.22+, Python 3.11+
+**Requirements:** Go 1.26+, Docker (optional — the memory store needs neither).
 
 ```bash
 git clone https://github.com/SanthoshRaaj-KR/Veya.git
 cd Veya
 
-# PostgreSQL + NATS JetStream
-docker compose up -d
-
-# Schema
-make migrate
-
-# Runtime (engine + outbox relay)
-make run-runtime
-
-# Worker pool
-make run-workers WORKERS=3
+make up          # PostgreSQL on :5433, NATS on :4222
+make migrate     # apply the schema
+make demo        # run the built-in agent end to end
 ```
 
-**Python SDK:**
+Port 5433, not 5432: a machine that already runs PostgreSQL would otherwise
+shadow the container, and the resulting error is confusing rather than loud.
+
+No Docker? The memory store runs the identical code path:
 
 ```bash
-pip install -e ./sdk/python
-export VEYA_DSN="postgres://veya:veya@localhost:5432/veya"
-export VEYA_NATS="nats://localhost:4222"
-
-python examples/refund_agent.py
+make demo-memory
 ```
 
-**Inspecting a run:**
+**Serving, and starting runs from elsewhere:**
 
 ```bash
-veya runs list
-veya runs show R123          # current state
-veya runs history R123       # full event history
-veya effects unresolved      # anything UNKNOWN awaiting reconciliation
-veya workers                 # liveness and lease ownership
+veya-runtime --dsn "$VEYA_DSN"              # engine + workers + recovery loop
+veya run start  --input '{"meeting_id":"M-1"}'
+veya run show    RUN_ID                      # status, output, tasks
+veya run history RUN_ID                      # full event log (-v for payloads)
 ```
+
+The CLI writes to PostgreSQL directly, which is not a shortcut: PostgreSQL is
+authoritative, so asking it is the same as asking the runtime, and the answer
+does not depend on a runtime being up. A run created this way is `RUNNING` with
+no tasks — exactly what the recovery scan looks for — so the runtime adopts it
+on its next pass. Every CLI-started run therefore exercises the crash-recovery
+path.
+
+**Tests:**
+
+```bash
+make test              # unit; no Docker, milliseconds
+make test-integration  # the same contract suite against live PostgreSQL
+make test-race         # needs a C toolchain
+```
+
+**Not yet available.** The Python SDK, `examples/refund_agent.py`, and the
+`veya effects` / `veya workers` commands arrive with Layers 2–4; see the
+roadmap in §17.
 
 ---
 

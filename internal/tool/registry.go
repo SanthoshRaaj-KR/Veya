@@ -17,7 +17,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // Registry is a concurrency-safe name to handler map.

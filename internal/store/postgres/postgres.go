@@ -22,7 +22,7 @@ import (
 
 	_ "github.com/lib/pq" // registers the "postgres" driver
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // Store is the PostgreSQL-backed core.Store.

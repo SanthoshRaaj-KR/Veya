@@ -12,10 +12,10 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"github.com/santhoshraajkr/veya/internal/core"
-	"github.com/santhoshraajkr/veya/internal/core/storetest"
-	"github.com/santhoshraajkr/veya/internal/store/migrations"
-	"github.com/santhoshraajkr/veya/internal/store/postgres"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core/storetest"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/migrations"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
 )
 
 // TestStoreContract runs the identical suite the memory adapter runs. That the

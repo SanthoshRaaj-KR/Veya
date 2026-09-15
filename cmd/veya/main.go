@@ -25,12 +25,12 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/santhoshraajkr/veya/internal/clock"
-	"github.com/santhoshraajkr/veya/internal/core"
-	"github.com/santhoshraajkr/veya/internal/idgen"
-	"github.com/santhoshraajkr/veya/internal/store/migrations"
-	"github.com/santhoshraajkr/veya/internal/store/postgres"
-	"github.com/santhoshraajkr/veya/internal/wiring"
+	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/migrations"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
+	"github.com/SanthoshRaaj-KR/Veya/internal/wiring"
 )
 
 func main() {

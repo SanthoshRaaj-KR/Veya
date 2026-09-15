@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // ClaimTask takes ownership of a task on behalf of a worker.

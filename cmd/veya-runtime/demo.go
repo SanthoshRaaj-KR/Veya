@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/santhoshraajkr/veya/internal/decider"
-	"github.com/santhoshraajkr/veya/internal/tool"
+	"github.com/SanthoshRaaj-KR/Veya/internal/decider"
+	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
 )
 
 // The built-in demo agent: the meeting assistant from docs/architecture-primer.md.

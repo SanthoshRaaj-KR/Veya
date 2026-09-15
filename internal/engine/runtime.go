@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // Runtime is the recovery loop: it periodically re-reads the store and

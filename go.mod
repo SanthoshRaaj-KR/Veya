@@ -1,4 +1,4 @@
-module github.com/santhoshraajkr/veya
+module github.com/SanthoshRaaj-KR/Veya
 
 go 1.26
 

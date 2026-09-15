@@ -3,9 +3,9 @@ package memory_test
 import (
 	"testing"
 
-	"github.com/santhoshraajkr/veya/internal/core"
-	"github.com/santhoshraajkr/veya/internal/core/storetest"
-	"github.com/santhoshraajkr/veya/internal/store/memory"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core/storetest"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
 )
 
 // The memory adapter runs the same suite as PostgreSQL. If the two ever

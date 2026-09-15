@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/santhoshraajkr/veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
 // Random issues UUIDv4 identifiers from crypto/rand.
