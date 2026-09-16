@@ -51,7 +51,12 @@ type Config struct {
 	Workers      int           // in-process workers to run
 	ScanInterval time.Duration // recovery loop period
 	LeaseTTL     time.Duration // how long a claim lasts without a heartbeat
-	LogLevel     string        // debug | info | warn | error
+
+	// ReconcileInterval and ReconcileStaleAfter govern the background sweep
+	// that settles effects no live task will ever settle.
+	ReconcileInterval   time.Duration
+	ReconcileStaleAfter time.Duration
+	LogLevel            string // debug | info | warn | error
 }
 
 // DefaultConfig returns the configuration the binaries start from.
@@ -62,7 +67,10 @@ func DefaultConfig() Config {
 		Workers:      1,
 		ScanInterval: 2 * time.Second,
 		LeaseTTL:     engine.DefaultLeaseTTL,
-		LogLevel:     "info",
+
+		ReconcileInterval:   30 * time.Second,
+		ReconcileStaleAfter: time.Minute,
+		LogLevel:            "info",
 	}
 }
 
@@ -143,6 +151,7 @@ type Stack struct {
 	Tools      *tool.Registry
 	Executor   *effects.Executor
 	Reaper     *lease.Reaper
+	Reconciler *effects.Reconciler
 	Workers    []*worker.Worker
 	Logger     *slog.Logger
 }
@@ -226,6 +235,19 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		return nil, fmt.Errorf("wiring: build reaper: %w", err)
 	}
 
+	reconciler, err := effects.NewReconciler(effects.ReconcilerConfig{
+		Store:      store,
+		Tools:      agent.Tools,
+		Clock:      clk,
+		Interval:   cfg.ReconcileInterval,
+		StaleAfter: cfg.ReconcileStaleAfter,
+		Logger:     log,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("wiring: build reconciler: %w", err)
+	}
+
 	workers := make([]*worker.Worker, 0, cfg.Workers)
 	for i := 0; i < cfg.Workers; i++ {
 		w, err := worker.New(worker.Config{
@@ -250,6 +272,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		Tools:      agent.Tools,
 		Executor:   executor,
 		Reaper:     reaper,
+		Reconciler: reconciler,
 		Workers:    workers,
 		Logger:     log,
 	}, nil
@@ -279,6 +302,12 @@ func (s *Stack) Serve(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		_ = s.Reaper.Run(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = s.Reconciler.Run(ctx)
 	}()
 
 	<-ctx.Done()
