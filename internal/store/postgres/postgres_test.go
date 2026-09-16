@@ -100,3 +100,59 @@ func truncateAll(t *testing.T, db *sql.DB) {
 		t.Fatalf("truncate: %v", err)
 	}
 }
+
+// TestEffectsResistRunDeletion pins a schema property the contract suite
+// cannot express, because core.Store has no delete and deliberately never will.
+//
+// Effect foreign keys are RESTRICT, never CASCADE. An effect record erased
+// while a redelivery is still possible is a side effect executed twice, so an
+// attempt to delete a run that still has effects must fail loudly rather than
+// quietly take the duplicate-prevention ledger with it. This is the kind of
+// constraint that gets "tidied up" by a later migration, so it gets a test.
+func TestEffectsResistRunDeletion(t *testing.T) {
+	dsn := requireDSN(t)
+	ctx := context.Background()
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, err := migrations.Apply(ctx, db); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	truncateAll(t, db)
+
+	seed := []string{
+		`INSERT INTO runs (run_id, agent_name, agent_version, status)
+		 VALUES ('run-fk', 'a', 'v1', 'RUNNING')`,
+		`INSERT INTO tasks (task_id, run_id, step_id, task_type, payload, status)
+		 VALUES ('task-fk', 'run-fk', 'S1', 'send_email', '{}', 'RUNNING')`,
+		`INSERT INTO effects (effect_id, task_id, run_id, effect_type, effect_class,
+		                      idempotency_key, status)
+		 VALUES ('eff-fk', 'task-fk', 'run-fk', 'send_email', 'IDEMPOTENT_BY_KEY',
+		         'run-fk:S1:E1', 'COMMITTED')`,
+	}
+	for _, stmt := range seed {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, `DELETE FROM runs WHERE run_id = 'run-fk'`); err == nil {
+		t.Fatal("deleting a run with effects succeeded; the FK must be RESTRICT, never CASCADE")
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM tasks WHERE task_id = 'task-fk'`); err == nil {
+		t.Fatal("deleting a task with effects succeeded; the FK must be RESTRICT, never CASCADE")
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM effects WHERE idempotency_key = 'run-fk:S1:E1'`).Scan(&count); err != nil {
+		t.Fatalf("count effects: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("effect row count = %d, want 1: the ledger must have survived", count)
+	}
+}

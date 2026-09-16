@@ -68,14 +68,17 @@ func (c *ticking) Now() time.Time {
 	return c.now
 }
 
+// contract is one named behaviour every adapter must exhibit.
+type contract struct {
+	name string
+	fn   func(*testing.T, core.Store)
+}
+
 // RunStoreSuite runs the full contract against one adapter.
 func RunStoreSuite(t *testing.T, newStore NewStore) {
 	t.Helper()
 
-	tests := []struct {
-		name string
-		fn   func(*testing.T, core.Store)
-	}{
+	tests := []contract{
 		{"RunLifecycle", testRunLifecycle},
 		{"AdvanceRunIsCompareAndSwap", testAdvanceRunCAS},
 		{"AdvanceRunRejectsTerminal", testAdvanceRunTerminal},
@@ -88,6 +91,7 @@ func RunStoreSuite(t *testing.T, newStore NewStore) {
 		{"PendingTasksReturnsDispatchable", testPendingTasks},
 		{"RunsAwaitingAdvanceExcludesInFlight", testAwaitingAdvance},
 	}
+	tests = append(tests, effectContracts()...)
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

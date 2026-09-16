@@ -34,7 +34,8 @@ const (
 	constraintEventSeq  = "events_pkey"              // PRIMARY KEY (run_id, seq)
 	constraintRunPK     = "runs_pkey"
 	constraintTaskPK    = "tasks_pkey"
-	constraintEffectKey = "effects_idempotency_key_key" // Layer 2
+	constraintEffectPK  = "effects_pkey"
+	constraintEffectKey = "effects_idempotency_key_key" // UNIQUE (idempotency_key)
 )
 
 // translate maps a driver error onto a core sentinel, wrapping it with context.
@@ -58,7 +59,13 @@ func translate(op string, err error) error {
 			return fmt.Errorf("%s: %w", op, core.ErrTaskExists)
 		case constraintEventSeq:
 			return fmt.Errorf("%s: %w", op, core.ErrSeqConflict)
-		case constraintRunPK, constraintTaskPK, constraintEffectKey:
+		case constraintEffectKey:
+			// Distinct from ErrConflict on purpose. This one means "this
+			// logical action already has a record, go and read it", and a
+			// caller that treated it as a generic conflict and gave up would
+			// turn a safely prevented duplicate into a stuck run.
+			return fmt.Errorf("%s: %w", op, core.ErrEffectExists)
+		case constraintRunPK, constraintTaskPK, constraintEffectPK:
 			return fmt.Errorf("%s: %w", op, core.ErrConflict)
 		default:
 			return fmt.Errorf("%s (constraint %s): %w", op, pqErr.Constraint, core.ErrConflict)

@@ -35,6 +35,22 @@ type Store interface {
 	// and advanced by another is found this way.
 	RunsAwaitingAdvance(ctx context.Context, limit int) ([]RunID, error)
 
+	// GetEffect reads one ledger row by its provider-facing key.
+	GetEffect(ctx context.Context, key IdempotencyKey) (Effect, error)
+
+	// ListEffects returns a run's effects, oldest first. This is the audit
+	// trail that answers "what did this run actually do to the outside world?".
+	ListEffects(ctx context.Context, runID RunID) ([]Effect, error)
+
+	// UnresolvedEffects returns effects still RUNNING or UNKNOWN whose last
+	// update predates `before`, oldest first.
+	//
+	// The staleness bound is what stops the reconciler racing live workers: an
+	// effect marked RUNNING a moment ago is almost certainly a request in
+	// flight, not an abandoned one, and asking the provider about it would be
+	// both wasteful and misleading.
+	UnresolvedEffects(ctx context.Context, before time.Time, limit int) ([]Effect, error)
+
 	Close() error
 }
 
@@ -70,6 +86,29 @@ type Tx interface {
 	// AppendEvent writes one event. Returns ErrSeqConflict if (run, seq) is
 	// taken.
 	AppendEvent(ctx context.Context, e Event) error
+
+	// ReserveEffect inserts a ledger row, relying on the unique constraint on
+	// the idempotency key.
+	//
+	// It must be one conditional insert, never a read followed by a write: the
+	// gap between those two is exactly where a second worker slips through,
+	// and the database constraint is the only thing that closes it. This is
+	// the real mutual-exclusion primitive of the design — not the lease, which
+	// can be wrong, and not the fencing token, which guards a different
+	// boundary.
+	//
+	// Returns ErrEffectExists when the key is taken. That is not a failure: it
+	// means the action already has a record, and the caller must load it and
+	// branch on its status.
+	ReserveEffect(ctx context.Context, e Effect) error
+
+	// GetEffect reads a ledger row inside the transaction.
+	GetEffect(ctx context.Context, key IdempotencyKey) (Effect, error)
+
+	// TransitionEffect moves an effect between statuses, applying only if it
+	// is currently in from. Returns ErrConflict if it is not, and
+	// ErrInvalidTransition if the edge is not permitted.
+	TransitionEffect(ctx context.Context, key IdempotencyKey, from, to EffectStatus, out EffectOutcome) error
 }
 
 // Dispatcher carries a task from the runtime to a worker.
