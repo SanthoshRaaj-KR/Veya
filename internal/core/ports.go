@@ -51,6 +51,15 @@ type Store interface {
 	// both wasteful and misleading.
 	UnresolvedEffects(ctx context.Context, before time.Time, limit int) ([]Effect, error)
 
+	// ExpiredLeases returns leases whose owner has gone silent, on tasks that
+	// are still supposed to be worked on, oldest expiry first. The reaper's
+	// input.
+	//
+	// Leases on finished tasks are excluded. A completed task's lease is
+	// released and therefore looks expired forever; returning it would give
+	// the reaper an ever-growing pile of work that is already done.
+	ExpiredLeases(ctx context.Context, now time.Time, limit int) ([]Lease, error)
+
 	Close() error
 }
 
@@ -109,6 +118,39 @@ type Tx interface {
 	// is currently in from. Returns ErrConflict if it is not, and
 	// ErrInvalidTransition if the edge is not permitted.
 	TransitionEffect(ctx context.Context, key IdempotencyKey, from, to EffectStatus, out EffectOutcome) error
+
+	// RegisterWorker records a worker, or updates one already known.
+	//
+	// Layer 2 needs this only because a lease points at a worker and must
+	// point at something real. Capability routing and liveness heartbeating
+	// arrive in Layer 3, when workers can live in another process.
+	RegisterWorker(ctx context.Context, w Worker) error
+
+	// AcquireLease takes ownership of a task until expiresAt, returning a
+	// fencing token strictly higher than any previously issued for that task.
+	//
+	// A live lease held by someone else yields ErrLeaseHeld. An expired one is
+	// taken over, which is the entire point: a worker that went silent must
+	// not be able to hold work hostage. The token counter survives the
+	// takeover, because a token that could repeat would stop distinguishing
+	// the new owner from the old one.
+	AcquireLease(ctx context.Context, taskID TaskID, workerID string, now, expiresAt time.Time) (Lease, error)
+
+	// GetLease reads current ownership. Returns ErrNotFound if the task has
+	// never been claimed.
+	GetLease(ctx context.Context, taskID TaskID) (Lease, error)
+
+	// ExtendLease pushes back the expiry, for the holder of token only.
+	//
+	// A heartbeat is a mutation and is fenced like every other one. Without
+	// that check a stale worker could renew a lease it no longer owns, and the
+	// runtime would believe live work belonged to a process that is gone.
+	// Returns ErrFenced when the token is not current.
+	ExtendLease(ctx context.Context, taskID TaskID, token FencingToken, expiresAt time.Time) error
+
+	// ReleaseLease gives up ownership, for the holder of token only. The row
+	// survives so the fencing token keeps counting up.
+	ReleaseLease(ctx context.Context, taskID TaskID, token FencingToken, now time.Time) error
 }
 
 // Dispatcher carries a task from the runtime to a worker.

@@ -92,6 +92,7 @@ func RunStoreSuite(t *testing.T, newStore NewStore) {
 		{"RunsAwaitingAdvanceExcludesInFlight", testAwaitingAdvance},
 	}
 	tests = append(tests, effectContracts()...)
+	tests = append(tests, leaseContracts()...)
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

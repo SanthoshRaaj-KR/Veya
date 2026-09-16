@@ -51,6 +51,8 @@ type state struct {
 	stepIndex map[stepKey]core.TaskID // enforces UNIQUE (run_id, step_id)
 	events    map[core.RunID][]core.Event
 	effects   map[core.IdempotencyKey]core.Effect // enforces UNIQUE (idempotency_key)
+	leases    map[core.TaskID]core.Lease
+	workers   map[string]core.Worker
 }
 
 func newState() *state {
@@ -60,6 +62,8 @@ func newState() *state {
 		stepIndex: map[stepKey]core.TaskID{},
 		events:    map[core.RunID][]core.Event{},
 		effects:   map[core.IdempotencyKey]core.Effect{},
+		leases:    map[core.TaskID]core.Lease{},
+		workers:   map[string]core.Worker{},
 	}
 }
 
@@ -70,6 +74,8 @@ func (s *state) clone() *state {
 		stepIndex: make(map[stepKey]core.TaskID, len(s.stepIndex)),
 		events:    make(map[core.RunID][]core.Event, len(s.events)),
 		effects:   make(map[core.IdempotencyKey]core.Effect, len(s.effects)),
+		leases:    make(map[core.TaskID]core.Lease, len(s.leases)),
+		workers:   make(map[string]core.Worker, len(s.workers)),
 	}
 	for k, v := range s.runs {
 		c.runs[k] = v
@@ -85,6 +91,12 @@ func (s *state) clone() *state {
 	}
 	for k, v := range s.effects {
 		c.effects[k] = v
+	}
+	for k, v := range s.leases {
+		c.leases[k] = v
+	}
+	for k, v := range s.workers {
+		c.workers[k] = v
 	}
 	return c
 }
