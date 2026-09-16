@@ -45,8 +45,11 @@ const usage = `veya — operator CLI for the Veya durable execution runtime
 Commands:
   migrate               apply database migrations
   run start             create a run
-  run show RUN_ID       status, output and tasks
+  run show RUN_ID       status, output, tasks and effects
   run history RUN_ID    the full event log
+  effects               external actions whose outcome is still unknown
+  effects show KEY      one effect in full
+  effects resolve KEY   record what a human established
 
 Run "veya COMMAND --help" for flags.
 `
@@ -62,6 +65,8 @@ func run(args []string) error {
 		return cmdMigrate(args[1:])
 	case "run":
 		return cmdRun(args[1:])
+	case "effects":
+		return cmdEffects(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil

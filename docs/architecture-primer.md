@@ -1027,4 +1027,30 @@ That's the system. Not one perfect lock — a set of imperfect mechanisms arrang
 
 ---
 
+## What is built today
+
+Layers 1 and 2 are implemented and tested against PostgreSQL. Everything this
+document describes about claims, leases, fencing tokens, the effect ledger,
+`UNKNOWN`, and reconciliation is running code rather than a plan.
+
+Three things it describes are still ahead:
+
+- **The outbox and JetStream** (§12) are Layer 3. Today a task is published to
+  an in-process channel after its transaction commits, which leaves the window
+  §12 describes. It is survivable for the reason given there — the task is
+  durable as `PENDING` and a recovery scan finds it — but the window is real
+  until the relay exists.
+- **Replay** (§13) is Layer 4, and arrives with the agent SDK. Today a run's
+  next step is decided by walking its recorded history, which is the same
+  shape, but there is no language model whose decisions need reading back yet.
+- **Fan-out** (§13) is Layer 5. `StepID.Child` exists so that child numbering
+  has one definition, but nothing produces parallel steps yet.
+
+When a tool's outcome cannot be settled by any mechanism, the effect parks in
+`UNKNOWN` and `veya effects` lists it. A person checks the provider and records
+what they found. That is the design working, not failing: §11 is where it says
+so.
+
+---
+
 *See the [README](../README.md) for the schema, the API, the full tradeoff list, and the roadmap.*

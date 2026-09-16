@@ -771,7 +771,9 @@ CREATE INDEX idx_outbox_unpublished ON task_outbox (outbox_id)
 | `EFFECT_CREATED` | A side effect is registered as `PENDING` |
 | `EFFECT_COMMITTED` / `EFFECT_FAILED` | Outcome is known |
 | `EFFECT_UNKNOWN` | Outcome is genuinely uncertain |
-| `EFFECT_RECONCILED` | An `UNKNOWN` effect was resolved |
+| `EFFECT_RECONCILED` | An `UNKNOWN` effect was resolved, by lookup or by a human |
+| `EFFECT_ESCALATED` | An outcome cannot be resolved automatically; a person must decide |
+| `LEASE_EXPIRED` | An owner went silent and the task was reclaimed under a higher token |
 | `TIMER_SET` / `TIMER_FIRED` | Durable sleep |
 | `SIGNAL_RECEIVED` | External event delivered to a waiting run |
 | `RUN_CANCELLED` / `RUN_COMPLETED` / `RUN_FAILED` | Terminal |
@@ -986,9 +988,23 @@ make demo-memory
 ```bash
 veya-runtime --dsn "$VEYA_DSN"              # engine + workers + recovery loop
 veya run start  --input '{"meeting_id":"M-1"}'
-veya run show    RUN_ID                      # status, output, tasks
+veya run show    RUN_ID                      # status, output, tasks, effects
 veya run history RUN_ID                      # full event log (-v for payloads)
 ```
+
+**When the runtime refuses to guess:**
+
+```bash
+veya effects                                 # outcomes still unknown
+veya effects show KEY                        # one effect in full
+veya effects resolve KEY --committed --ref PROVIDER_REF
+veya effects resolve KEY --not-executed
+```
+
+An `UNRECONCILABLE` tool whose outcome is ambiguous parks here permanently —
+no runtime can settle it, so a person checks the provider and records what
+they found. `resolve` takes no default and has no `--probably`: the operator
+is asserting a fact they established, not a guess.
 
 The CLI writes to PostgreSQL directly, which is not a shortcut: PostgreSQL is
 authoritative, so asking it is the same as asking the runtime, and the answer
@@ -1006,8 +1022,7 @@ make test-race         # needs a C toolchain
 ```
 
 **Not yet available.** The Python SDK, `examples/refund_agent.py`, and the
-`veya effects` / `veya workers` commands arrive with Layers 2–4; see the
-roadmap in §17.
+`veya workers` command arrive with Layers 3–4; see the roadmap in §17.
 
 ---
 
@@ -1054,6 +1069,8 @@ veya/
 │   ├── core/            ✅ # domain types + port interfaces; imports nothing
 │   │   └── storetest/   ✅ # contract suite every Store adapter must pass
 │   ├── engine/          ✅ # run lifecycle, advancement, recovery scan
+│   ├── effects/         ✅ # the ledger in the execution path + reconciler
+│   ├── lease/           ✅ # the reaper: reclaiming abandoned work
 │   ├── worker/          ✅ # claim → execute → report
 │   ├── decider/         ✅ # what happens next (static now, LLM in L4)
 │   ├── tool/            ✅ # task type → handler registry
@@ -1070,8 +1087,6 @@ veya/
 │   │   ├── jetstream/      # (L3)
 │   │   ├── postgres/       # SKIP LOCKED implementation (L3)
 │   │   └── redis/          # (L3, benchmark comparison)
-│   ├── effects/            # effect ledger + reconciliation (L2)
-│   ├── lease/              # leases, fencing, reaper (L2)
 │   └── telemetry/          # metrics, tracing, structured logs (L6)
 ├── sdk/
 │   └── python/             # Runtime, @agent, @tool, ctx primitives (L4)
@@ -1149,11 +1164,21 @@ Not for performance reasons. Kafka is a distributed log without per-message ackn
 > at-least-once delivery safe, and is proven by a test that delivers one task
 > 21 times across 4 workers and executes it once.
 
-**Layer 2 — Effect safety** *(the core value proposition)*
-- [ ] Effect ledger with `UNKNOWN` state
-- [ ] Idempotency keys and the tool contract
-- [ ] Leases, heartbeats, fencing tokens
-- [ ] Reconciliation by tool class
+**Layer 2 — Effect safety** *(the core value proposition)* ✅ *complete*
+- [x] Effect ledger with `UNKNOWN` state
+- [x] Idempotency keys and the tool contract
+- [x] Leases, heartbeats, fencing tokens
+- [x] Reconciliation by tool class
+
+> Every tool call with an external consequence now goes through the ledger.
+> Proven by test: 51 deliveries of one task across 4 workers call the provider
+> once; a worker killed after the provider acted recovers by *asking* rather
+> than re-sending; an `UNRECONCILABLE` outcome stops and escalates instead of
+> guessing. Unresolved effects are visible and settleable with `veya effects`.
+>
+> Still absent by design: no backoff or per-tool retry policy (Layer 5), and
+> `effect_seq` is always 1 because a task performs one tool call — the numbering
+> exists so sub-effects do not invalidate every key when the SDK lands.
 
 **Layer 3 — Distribution**
 - [ ] Transactional outbox and relay
