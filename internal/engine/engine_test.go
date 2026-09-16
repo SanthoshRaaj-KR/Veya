@@ -13,12 +13,12 @@ import (
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
-	"github.com/SanthoshRaaj-KR/Veya/internal/core/storetest"
 	"github.com/SanthoshRaaj-KR/Veya/internal/decider"
 	"github.com/SanthoshRaaj-KR/Veya/internal/dispatch/inproc"
 	"github.com/SanthoshRaaj-KR/Veya/internal/effects"
 	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
+	"github.com/SanthoshRaaj-KR/Veya/internal/lease"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
 	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
 	"github.com/SanthoshRaaj-KR/Veya/internal/worker"
@@ -259,11 +259,13 @@ func TestDuplicateDeliveryExecutesOnce(t *testing.T) {
 const testAgent = "test-agent"
 
 type harness struct {
+	clock      *clock.Virtual
 	store      core.Store
 	dispatcher core.Dispatcher
 	tools      *tool.Registry
 	engine     *engine.Engine
 	executor   *effects.Executor
+	reaper     *lease.Reaper
 	runtime    *engine.Runtime
 
 	wg     sync.WaitGroup
@@ -277,7 +279,11 @@ func newHarness(t *testing.T, d core.Decider) *harness {
 func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher) *harness {
 	t.Helper()
 
-	store := memory.New(storetest.TickingClock())
+	// A virtual clock, frozen unless a test advances it. Leases therefore
+	// never lapse by accident, and a test that wants to simulate a dead worker
+	// says so explicitly rather than sleeping and hoping.
+	clk := clock.NewVirtual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := memory.New(clk)
 	tools := tool.New()
 
 	eng, err := engine.New(engine.Config{
@@ -285,8 +291,8 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 		Dispatcher:   disp,
 		Decider:      d,
 		IDGen:        idgen.NewSequential(),
-		Clock:        clock.System{},
-		LeaseTTL:     2 * time.Second,
+		Clock:        clk,
+		LeaseTTL:     30 * time.Second,
 		Agent:        testAgent,
 		AgentVersion: "v1",
 		Logger:       quietLogger(),
@@ -299,19 +305,31 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 		Store: store,
 		Tools: tools,
 		IDGen: idgen.NewSequential(),
-		Clock: clock.System{},
+		Clock: clk,
 		Log:   quietLogger(),
 	})
 	if err != nil {
 		t.Fatalf("effects.New: %v", err)
 	}
 
+	reaper, err := lease.New(lease.Config{
+		Store:      store,
+		Dispatcher: disp,
+		Clock:      clk,
+		Logger:     quietLogger(),
+	})
+	if err != nil {
+		t.Fatalf("lease.New: %v", err)
+	}
+
 	h := &harness{
+		clock:      clk,
 		store:      store,
 		dispatcher: disp,
 		tools:      tools,
 		engine:     eng,
 		executor:   executor,
+		reaper:     reaper,
 		runtime:    engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: 10 * time.Millisecond}),
 	}
 	t.Cleanup(h.stop)
@@ -504,4 +522,10 @@ func TestEngineIgnoresOtherAgentsRuns(t *testing.T) {
 // quietLogger keeps test output readable; failures report through t, not logs.
 func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// advanceClockPast moves the virtual clock beyond d, so that anything with a
+// deadline of d has demonstrably lapsed.
+func (h *harness) advanceClockPast(d time.Duration) {
+	h.clock.Advance(d + time.Second)
 }

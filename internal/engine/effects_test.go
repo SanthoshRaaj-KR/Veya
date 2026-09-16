@@ -313,10 +313,12 @@ func TestExpiredProviderKeyEscalates(t *testing.T) {
 		return core.Resolution{Kind: core.ResolvedNotExecuted}, nil
 	})
 
-	// A key the provider forgets immediately: every reconciliation is already
-	// past the window.
-	h.tools.Effectful("charge", core.ClassQueryable, time.Nanosecond,
+	// The provider honours keys for a minute. The call itself takes an hour of
+	// wall time — a stalled request, a queue backed up — so by the time anyone
+	// reconciles, the key is long forgotten.
+	h.tools.Effectful("charge", core.ClassQueryable, time.Minute,
 		func(context.Context, []byte) ([]byte, error) {
+			h.clock.Advance(time.Hour)
 			return nil, errors.New("timeout")
 		}, reconciler)
 	h.start(t)

@@ -26,6 +26,7 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/effects"
 	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
+	"github.com/SanthoshRaaj-KR/Veya/internal/lease"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
 	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
@@ -141,6 +142,7 @@ type Stack struct {
 	Runtime    *engine.Runtime
 	Tools      *tool.Registry
 	Executor   *effects.Executor
+	Reaper     *lease.Reaper
 	Workers    []*worker.Worker
 	Logger     *slog.Logger
 }
@@ -212,6 +214,18 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		return nil, fmt.Errorf("wiring: build executor: %w", err)
 	}
 
+	reaper, err := lease.New(lease.Config{
+		Store:      store,
+		Dispatcher: dispatcher,
+		Clock:      clk,
+		Interval:   cfg.ScanInterval,
+		Logger:     log,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("wiring: build reaper: %w", err)
+	}
+
 	workers := make([]*worker.Worker, 0, cfg.Workers)
 	for i := 0; i < cfg.Workers; i++ {
 		w, err := worker.New(worker.Config{
@@ -235,6 +249,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		Runtime:    engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: cfg.ScanInterval}),
 		Tools:      agent.Tools,
 		Executor:   executor,
+		Reaper:     reaper,
 		Workers:    workers,
 		Logger:     log,
 	}, nil
@@ -258,6 +273,12 @@ func (s *Stack) Serve(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		_ = s.Runtime.Run(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = s.Reaper.Run(ctx)
 	}()
 
 	<-ctx.Done()
