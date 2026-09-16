@@ -69,7 +69,7 @@ func TestFailedTaskRetriesThenSucceeds(t *testing.T) {
 	))
 
 	var calls atomic.Int32
-	h.tools.Register("flaky", func(_ context.Context, _ []byte) ([]byte, error) {
+	h.tools.Func("flaky", func(_ context.Context, _ []byte) ([]byte, error) {
 		if calls.Add(1) < 3 {
 			return nil, fmt.Errorf("transient failure %d", calls.Load())
 		}
@@ -112,7 +112,7 @@ func TestExhaustedTaskFailsTheRun(t *testing.T) {
 	))
 
 	var calls atomic.Int32
-	h.tools.Register("broken", func(_ context.Context, _ []byte) ([]byte, error) {
+	h.tools.Func("broken", func(_ context.Context, _ []byte) ([]byte, error) {
 		calls.Add(1)
 		return nil, fmt.Errorf("permanently broken")
 	})
@@ -211,7 +211,7 @@ func TestDuplicateDeliveryExecutesOnce(t *testing.T) {
 
 	var calls atomic.Int32
 	release := make(chan struct{})
-	h.tools.Register("counted", func(_ context.Context, _ []byte) ([]byte, error) {
+	h.tools.Func("counted", func(_ context.Context, _ []byte) ([]byte, error) {
 		calls.Add(1)
 		<-release // hold the task open so redeliveries arrive mid-flight
 		return json.RawMessage(`{"ok":true}`), nil
@@ -302,7 +302,7 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 }
 
 func (h *harness) registerEcho(name string) {
-	h.tools.Register(name, func(_ context.Context, payload []byte) ([]byte, error) {
+	h.tools.Func(name, func(_ context.Context, payload []byte) ([]byte, error) {
 		if len(payload) == 0 {
 			return json.RawMessage(`{"echoed":null}`), nil
 		}

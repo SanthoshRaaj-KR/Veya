@@ -36,7 +36,7 @@ func demoDecider() *decider.Static {
 func demoTools() *tool.Registry {
 	r := tool.New()
 
-	r.Register("fetch_meeting", func(_ context.Context, payload []byte) ([]byte, error) {
+	r.Func("fetch_meeting", func(_ context.Context, payload []byte) ([]byte, error) {
 		var in struct {
 			MeetingID string `json:"meeting_id"`
 		}
@@ -51,7 +51,7 @@ func demoTools() *tool.Registry {
 		})
 	})
 
-	r.Register("summarize", func(_ context.Context, _ []byte) ([]byte, error) {
+	r.Func("summarize", func(_ context.Context, _ []byte) ([]byte, error) {
 		// A real agent would call a model here. From Layer 2 that call gets an
 		// effect row of its own, because a model call is billed and cannot be
 		// replayed by the provider — treating it as a free read is how a crash
@@ -61,7 +61,7 @@ func demoTools() *tool.Registry {
 		})
 	})
 
-	r.Register("send_summary", func(_ context.Context, payload []byte) ([]byte, error) {
+	r.Func("send_summary", func(_ context.Context, payload []byte) ([]byte, error) {
 		var in struct {
 			Channel string `json:"channel"`
 		}

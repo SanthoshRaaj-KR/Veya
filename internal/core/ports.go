@@ -81,8 +81,8 @@ type Tx interface {
 // independent, and order within a run comes from run version CAS.
 //
 // Delivery is at-least-once and always will be. Duplicate suppression belongs
-// to the claim transition and, from Layer 2, to the effect ledger's unique
-// key — never to the transport.
+// to the claim transition and to the effect ledger's unique key — never to the
+// transport.
 //
 // Layer 3 adds acknowledgement and redelivery for the JetStream adapter. The
 // in-process adapter has neither, which is honest: it cannot lose a message
@@ -98,22 +98,6 @@ type Dispatcher interface {
 	Close() error
 }
 
-// ToolHandler executes one tool call. Payload and return value are opaque
-// JSON: the runtime never interprets either.
-type ToolHandler func(ctx context.Context, payload []byte) ([]byte, error)
-
-// ToolRegistry resolves a task type to the code that runs it.
-//
-// From Layer 2 this also carries the effect class, which is what decides
-// whether an ambiguous outcome may be retried, must be queried, or has to be
-// escalated. The engine will read that off the descriptor rather than
-// switching on tool names — a switch on a tool name anywhere above this
-// interface is the coupling this port exists to prevent.
-type ToolRegistry interface {
-	Lookup(name string) (ToolHandler, error)
-	Names() []string
-}
-
 // Clock is the only source of time above the composition root.
 type Clock interface {
 	Now() time.Time
@@ -123,4 +107,5 @@ type Clock interface {
 type IDGen interface {
 	NewRunID() RunID
 	NewTaskID() TaskID
+	NewEffectID() EffectID
 }

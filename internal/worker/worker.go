@@ -122,7 +122,7 @@ func (w *Worker) execute(ctx context.Context, id core.TaskID) {
 		return
 	}
 
-	handler, err := w.tools.Lookup(task.Type)
+	descriptor, err := w.tools.Lookup(task.Type)
 	if err != nil {
 		// This worker cannot run this tool. That is a failure of the task, not
 		// of the worker: report it and let the engine decide whether another
@@ -131,7 +131,7 @@ func (w *Worker) execute(ctx context.Context, id core.TaskID) {
 		return
 	}
 
-	result, err := handler(ctx, task.Payload)
+	result, err := descriptor.Handler(ctx, task.Payload)
 	if err != nil {
 		w.log.Warn("tool failed", "task_id", id, "tool", task.Type, "error", err)
 		w.report(ctx, w.engine.FailTask(ctx, id, err.Error()), id)

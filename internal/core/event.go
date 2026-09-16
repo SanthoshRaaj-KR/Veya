@@ -19,6 +19,24 @@ const (
 	EventTaskFailed    EventType = "TASK_FAILED"
 	EventRunCompleted  EventType = "RUN_COMPLETED"
 	EventRunFailed     EventType = "RUN_FAILED"
+
+	EventTaskRetryScheduled EventType = "TASK_RETRY_SCHEDULED"
+	EventTaskDeadLettered   EventType = "TASK_DEAD_LETTERED"
+
+	EventEffectCreated    EventType = "EFFECT_CREATED"
+	EventEffectCommitted  EventType = "EFFECT_COMMITTED"
+	EventEffectFailed     EventType = "EFFECT_FAILED"
+	EventEffectUnknown    EventType = "EFFECT_UNKNOWN"
+	EventEffectReconciled EventType = "EFFECT_RECONCILED"
+
+	// EventEffectEscalated records that an outcome cannot be resolved
+	// automatically and a human must decide. The run parks here rather than
+	// guessing in either direction.
+	EventEffectEscalated EventType = "EFFECT_ESCALATED"
+
+	// EventLeaseExpired records that a task's owner went silent and the task
+	// was reclaimed under a higher fencing token.
+	EventLeaseExpired EventType = "LEASE_EXPIRED"
 )
 
 // PayloadVersion is the schema version stamped on every event body written by
@@ -123,5 +141,33 @@ type (
 
 	RunFailedData struct {
 		Error string `json:"error"`
+	}
+
+	TaskRetryScheduledData struct {
+		TaskID  TaskID `json:"task_id"`
+		Attempt int    `json:"attempt"`
+		Reason  string `json:"reason"`
+	}
+
+	LeaseExpiredData struct {
+		TaskID        TaskID       `json:"task_id"`
+		PreviousOwner string       `json:"previous_owner"`
+		PreviousToken FencingToken `json:"previous_token"`
+	}
+
+	// EffectData is the body of every effect event. One shape for all of them
+	// so that an effect's whole story reads the same way at each step.
+	EffectData struct {
+		TaskID      TaskID          `json:"task_id"`
+		Key         IdempotencyKey  `json:"idempotency_key"`
+		EffectType  string          `json:"effect_type"`
+		Class       EffectClass     `json:"effect_class"`
+		Status      EffectStatus    `json:"status"`
+		ExternalRef string          `json:"external_ref,omitempty"`
+		Response    json.RawMessage `json:"response,omitempty"`
+		Error       string          `json:"error,omitempty"`
+		// Detail explains a reconciliation or an escalation in words an
+		// operator reading history can act on.
+		Detail string `json:"detail,omitempty"`
 	}
 )

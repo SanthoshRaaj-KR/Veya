@@ -19,9 +19,12 @@
 //	run.go        Run and its state machine
 //	task.go       Task and its state machine
 //	event.go      Event, event types, and the versioned payload envelope
+//	effect.go     the effect ledger: statuses, idempotency keys, UNKNOWN
+//	tool.go       ToolDescriptor, effect classes, Reconciler
+//	lease.go      leases, fencing tokens, the recovery decision table
 //	decision.go   Decider — what an agent does next, independent of how
 //	errors.go     Sentinel errors every adapter translates into
-//	ports.go      Store, Tx, Dispatcher, ToolRegistry, Clock, IDGen
+//	ports.go      Store, Tx, Dispatcher, Clock, IDGen
 //
 // # Time and identity are injected
 //

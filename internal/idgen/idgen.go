@@ -24,8 +24,9 @@ import (
 // identity source is this small should not need a module for it.
 type Random struct{}
 
-func (Random) NewRunID() core.RunID   { return core.RunID(uuidv4()) }
-func (Random) NewTaskID() core.TaskID { return core.TaskID(uuidv4()) }
+func (Random) NewRunID() core.RunID       { return core.RunID(uuidv4()) }
+func (Random) NewTaskID() core.TaskID     { return core.TaskID(uuidv4()) }
+func (Random) NewEffectID() core.EffectID { return core.EffectID(uuidv4()) }
 
 func uuidv4() string {
 	var b [16]byte
@@ -56,8 +57,9 @@ func uuidv4() string {
 // The IDs are not UUIDs and are not meant to be. They are for tests, where a
 // readable identifier in a failure message is worth more than a realistic one.
 type Sequential struct {
-	runs  atomic.Int64
-	tasks atomic.Int64
+	runs    atomic.Int64
+	tasks   atomic.Int64
+	effects atomic.Int64
 }
 
 func NewSequential() *Sequential { return &Sequential{} }
@@ -68,4 +70,8 @@ func (s *Sequential) NewRunID() core.RunID {
 
 func (s *Sequential) NewTaskID() core.TaskID {
 	return core.TaskID(fmt.Sprintf("task-%d", s.tasks.Add(1)))
+}
+
+func (s *Sequential) NewEffectID() core.EffectID {
+	return core.EffectID(fmt.Sprintf("effect-%d", s.effects.Add(1)))
 }

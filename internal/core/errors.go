@@ -45,4 +45,35 @@ var (
 	// ErrDispatcherClosed is returned by Claim once a dispatcher is shut down
 	// and no further deliveries will arrive.
 	ErrDispatcherClosed = errors.New("veya: dispatcher closed")
+
+	// ErrEffectExists is returned when an effect already exists for an
+	// idempotency key, enforced by a unique constraint.
+	//
+	// This is the mutual-exclusion primitive of the whole design, and callers
+	// must not treat it as a failure. It means "this action already has a
+	// record" — the correct response is to load that record and branch on its
+	// status, never to give up. Failing the task here would turn a safely
+	// prevented duplicate into a stuck run.
+	ErrEffectExists = errors.New("veya: effect already exists for idempotency key")
+
+	// ErrFenced is returned when a worker presents a fencing token lower than
+	// the one currently valid for a task.
+	//
+	// It means the worker lost ownership while it was away — almost always
+	// because it froze or was partitioned long enough for its lease to expire
+	// and be taken. The write is rejected and the worker must stop; someone
+	// else owns this work now.
+	ErrFenced = errors.New("veya: stale fencing token")
+
+	// ErrLeaseHeld is returned when a lease cannot be acquired because a live
+	// one already exists.
+	ErrLeaseHeld = errors.New("veya: lease is held by another worker")
+
+	// ErrNeedsReconciliation is returned when an effect's outcome is unknown
+	// and must be resolved before the task can proceed.
+	ErrNeedsReconciliation = errors.New("veya: effect outcome is unknown")
+
+	// ErrEscalated is returned when an outcome cannot be resolved by any
+	// mechanism and a human has to decide.
+	ErrEscalated = errors.New("veya: effect requires human resolution")
 )
