@@ -23,6 +23,7 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 	"github.com/SanthoshRaaj-KR/Veya/internal/dispatch/inproc"
+	"github.com/SanthoshRaaj-KR/Veya/internal/effects"
 	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
@@ -48,6 +49,7 @@ type Config struct {
 	DSN          string        // required when Store is postgres
 	Workers      int           // in-process workers to run
 	ScanInterval time.Duration // recovery loop period
+	LeaseTTL     time.Duration // how long a claim lasts without a heartbeat
 	LogLevel     string        // debug | info | warn | error
 }
 
@@ -58,6 +60,7 @@ func DefaultConfig() Config {
 		DSN:          DefaultDSN,
 		Workers:      1,
 		ScanInterval: 2 * time.Second,
+		LeaseTTL:     engine.DefaultLeaseTTL,
 		LogLevel:     "info",
 	}
 }
@@ -84,6 +87,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ScanInterval <= 0 {
 		c.ScanInterval = 2 * time.Second
+	}
+	if c.LeaseTTL <= 0 {
+		c.LeaseTTL = engine.DefaultLeaseTTL
 	}
 	if _, err := parseLevel(c.LogLevel); err != nil {
 		return err
@@ -134,6 +140,7 @@ type Stack struct {
 	Engine     *engine.Engine
 	Runtime    *engine.Runtime
 	Tools      *tool.Registry
+	Executor   *effects.Executor
 	Workers    []*worker.Worker
 	Logger     *slog.Logger
 }
@@ -180,6 +187,8 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		Dispatcher:   dispatcher,
 		Decider:      agent.Decider,
 		IDGen:        idgen.Random{},
+		Clock:        clk,
+		LeaseTTL:     cfg.LeaseTTL,
 		Agent:        agent.Name,
 		AgentVersion: agent.Version,
 		Logger:       log,
@@ -189,13 +198,27 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		return nil, fmt.Errorf("wiring: build engine: %w", err)
 	}
 
+	// Every tool call goes through the ledger, so that a duplicate attempt is
+	// harmless rather than merely unlikely.
+	executor, err := effects.New(effects.Config{
+		Store: store,
+		Tools: agent.Tools,
+		IDGen: idgen.Random{},
+		Clock: clk,
+		Log:   log,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("wiring: build executor: %w", err)
+	}
+
 	workers := make([]*worker.Worker, 0, cfg.Workers)
 	for i := 0; i < cfg.Workers; i++ {
 		w, err := worker.New(worker.Config{
 			ID:         fmt.Sprintf("worker-%d", i),
 			Engine:     eng,
 			Dispatcher: dispatcher,
-			Tools:      agent.Tools,
+			Executor:   executor,
 			Logger:     log,
 		})
 		if err != nil {
@@ -211,6 +234,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		Engine:     eng,
 		Runtime:    engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: cfg.ScanInterval}),
 		Tools:      agent.Tools,
+		Executor:   executor,
 		Workers:    workers,
 		Logger:     log,
 	}, nil

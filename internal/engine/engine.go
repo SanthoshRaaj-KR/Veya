@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
@@ -36,6 +37,8 @@ type Engine struct {
 	dispatcher   core.Dispatcher
 	decider      core.Decider
 	ids          core.IDGen
+	clock        core.Clock
+	leaseTTL     time.Duration
 	agent        string
 	agentVersion string
 	log          *slog.Logger
@@ -47,6 +50,17 @@ type Config struct {
 	Dispatcher core.Dispatcher
 	Decider    core.Decider
 	IDGen      core.IDGen
+	Clock      core.Clock
+
+	// LeaseTTL is how long a claim is good for before a worker must renew it.
+	//
+	// It trades recovery speed against tolerance for a slow tool: too short
+	// and a healthy worker loses work it is still doing, too long and a dead
+	// worker's task sits idle. Both are liveness costs, which is why an
+	// imperfect value here is survivable — README section 16. Per-task-type
+	// TTLs arrive in Layer 5, when an LLM call and a deployment stop deserving
+	// the same timeout.
+	LeaseTTL time.Duration
 
 	// Agent names the agent this engine serves, and AgentVersion is pinned
 	// onto every run it starts. Runs for any other agent are left alone.
@@ -67,6 +81,8 @@ func New(cfg Config) (*Engine, error) {
 		return nil, errors.New("engine: Decider is required")
 	case cfg.IDGen == nil:
 		return nil, errors.New("engine: IDGen is required")
+	case cfg.Clock == nil:
+		return nil, errors.New("engine: Clock is required")
 	case cfg.Agent == "":
 		return nil, errors.New("engine: Agent is required")
 	case cfg.AgentVersion == "":
@@ -77,11 +93,17 @@ func New(cfg Config) (*Engine, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	leaseTTL := cfg.LeaseTTL
+	if leaseTTL <= 0 {
+		leaseTTL = DefaultLeaseTTL
+	}
 	return &Engine{
 		store:        cfg.Store,
 		dispatcher:   cfg.Dispatcher,
 		decider:      cfg.Decider,
 		ids:          cfg.IDGen,
+		clock:        cfg.Clock,
+		leaseTTL:     leaseTTL,
 		agent:        cfg.Agent,
 		agentVersion: cfg.AgentVersion,
 		log:          log,
@@ -107,7 +129,7 @@ func (e *Engine) StartRun(ctx context.Context, input json.RawMessage) (core.RunI
 		if err := tx.CreateRun(ctx, run); err != nil {
 			return err
 		}
-		return appendEvent(ctx, tx, id, core.EventRunStarted, "", core.RunStartedData{
+		return core.Append(ctx, tx, id, core.EventRunStarted, "", core.RunStartedData{
 			AgentName:    agentName,
 			AgentVersion: agentVersion,
 			Input:        input,
@@ -209,7 +231,7 @@ func (e *Engine) dispatch(ctx context.Context, run core.Run, d core.Decision) er
 		if err := tx.CreateTask(ctx, task); err != nil {
 			return err
 		}
-		return appendEvent(ctx, tx, run.ID, core.EventTaskCreated, d.StepID, core.TaskCreatedData{
+		return core.Append(ctx, tx, run.ID, core.EventTaskCreated, d.StepID, core.TaskCreatedData{
 			TaskID:   taskID,
 			TaskType: d.TaskType,
 			Payload:  d.Payload,
@@ -248,7 +270,7 @@ func (e *Engine) finish(ctx context.Context, run core.Run, next core.RunState, e
 		if err := tx.AdvanceRun(ctx, run.ID, run.Version, next); err != nil {
 			return err
 		}
-		return appendEvent(ctx, tx, run.ID, evt, "", data)
+		return core.Append(ctx, tx, run.ID, evt, "", data)
 	})
 	if errors.Is(err, core.ErrConflict) {
 		return nil // another caller finished it
@@ -261,22 +283,12 @@ func (e *Engine) finish(ctx context.Context, run core.Run, next core.RunState, e
 	return nil
 }
 
-// appendEvent reads the next sequence and writes one event, inside tx.
+// DefaultLeaseTTL is how long a claim lasts without a heartbeat.
 //
-// The sequence is read and used in the same transaction, so the conditional
-// append on (run_id, seq) is a real check rather than a formality: a racing
-// writer that read the same number loses on commit.
-func appendEvent(ctx context.Context, tx core.Tx, runID core.RunID, typ core.EventType, step core.StepID, data any) error {
-	seq, err := tx.NextSeq(ctx, runID)
-	if err != nil {
-		return err
-	}
-	ev, err := core.NewEvent(runID, seq, typ, step, data)
-	if err != nil {
-		return err
-	}
-	return tx.AppendEvent(ctx, ev)
-}
+// Thirty seconds is short enough that a crashed worker's task is recoverable
+// quickly, and long enough that an ordinary tool call finishes inside one
+// lease even if the process is briefly busy.
+const DefaultLeaseTTL = 30 * time.Second
 
 // defaultMaxAttempts is how many times a task may be tried before it is dead
 // lettered. Per-tool retry policy and backoff arrive in Layer 5; until then

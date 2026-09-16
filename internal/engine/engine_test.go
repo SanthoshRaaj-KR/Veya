@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core/storetest"
 	"github.com/SanthoshRaaj-KR/Veya/internal/decider"
 	"github.com/SanthoshRaaj-KR/Veya/internal/dispatch/inproc"
+	"github.com/SanthoshRaaj-KR/Veya/internal/effects"
 	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
@@ -261,6 +263,7 @@ type harness struct {
 	dispatcher core.Dispatcher
 	tools      *tool.Registry
 	engine     *engine.Engine
+	executor   *effects.Executor
 	runtime    *engine.Runtime
 
 	wg     sync.WaitGroup
@@ -282,12 +285,25 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 		Dispatcher:   disp,
 		Decider:      d,
 		IDGen:        idgen.NewSequential(),
+		Clock:        clock.System{},
+		LeaseTTL:     2 * time.Second,
 		Agent:        testAgent,
 		AgentVersion: "v1",
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:       quietLogger(),
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
+	}
+
+	executor, err := effects.New(effects.Config{
+		Store: store,
+		Tools: tools,
+		IDGen: idgen.NewSequential(),
+		Clock: clock.System{},
+		Log:   quietLogger(),
+	})
+	if err != nil {
+		t.Fatalf("effects.New: %v", err)
 	}
 
 	h := &harness{
@@ -295,6 +311,7 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 		dispatcher: disp,
 		tools:      tools,
 		engine:     eng,
+		executor:   executor,
 		runtime:    engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: 10 * time.Millisecond}),
 	}
 	t.Cleanup(h.stop)
@@ -319,11 +336,12 @@ func (h *harness) spawn(t *testing.T, n int) {
 
 	for i := 0; i < n; i++ {
 		w, err := worker.New(worker.Config{
-			ID:         fmt.Sprintf("worker-%d", i),
-			Engine:     h.engine,
-			Dispatcher: h.dispatcher,
-			Tools:      h.tools,
-			Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+			ID:                fmt.Sprintf("worker-%d", i),
+			Engine:            h.engine,
+			Dispatcher:        h.dispatcher,
+			Executor:          h.executor,
+			HeartbeatInterval: 200 * time.Millisecond,
+			Logger:            quietLogger(),
 		})
 		if err != nil {
 			t.Fatalf("worker.New: %v", err)
@@ -481,4 +499,9 @@ func TestEngineIgnoresOtherAgentsRuns(t *testing.T) {
 	if len(tasks) != 0 {
 		t.Fatalf("engine created %d tasks on another agent's run", len(tasks))
 	}
+}
+
+// quietLogger keeps test output readable; failures report through t, not logs.
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

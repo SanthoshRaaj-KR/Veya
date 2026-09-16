@@ -124,6 +124,15 @@ func runDemo(ctx context.Context, stack *wiring.Stack) error {
 		fmt.Printf("  %3d  %-16s %s\n", ev.Seq, ev.Type, step)
 	}
 
+	effects, err := stack.Engine.Effects(context.WithoutCancel(demoCtx), runID)
+	if err != nil {
+		return fmt.Errorf("read effects: %w", err)
+	}
+	fmt.Printf("\neffects  %d ledger rows (a pure read writes none)\n", len(effects))
+	for _, e := range effects {
+		fmt.Printf("  %-16s %-18s %-10s %s\n", e.Key, e.Class, e.Status, e.ExternalRef)
+	}
+
 	if run.Status != core.RunCompleted {
 		return fmt.Errorf("demo run finished %s, want COMPLETED", run.Status)
 	}
