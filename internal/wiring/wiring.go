@@ -27,6 +27,7 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
 	"github.com/SanthoshRaaj-KR/Veya/internal/lease"
+	"github.com/SanthoshRaaj-KR/Veya/internal/outbox"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
 	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
@@ -52,6 +53,11 @@ type Config struct {
 	ScanInterval time.Duration // recovery loop period
 	LeaseTTL     time.Duration // how long a claim lasts without a heartbeat
 
+	// RelayInterval is the outbox relay's backstop period. The engine wakes the
+	// relay on commit, so this only bounds how long work committed by another
+	// process waits.
+	RelayInterval time.Duration
+
 	// ReconcileInterval and ReconcileStaleAfter govern the background sweep
 	// that settles effects no live task will ever settle.
 	ReconcileInterval   time.Duration
@@ -62,11 +68,12 @@ type Config struct {
 // DefaultConfig returns the configuration the binaries start from.
 func DefaultConfig() Config {
 	return Config{
-		Store:        StorePostgres,
-		DSN:          DefaultDSN,
-		Workers:      1,
-		ScanInterval: 2 * time.Second,
-		LeaseTTL:     engine.DefaultLeaseTTL,
+		Store:         StorePostgres,
+		DSN:           DefaultDSN,
+		Workers:       1,
+		ScanInterval:  2 * time.Second,
+		LeaseTTL:      engine.DefaultLeaseTTL,
+		RelayInterval: time.Second,
 
 		ReconcileInterval:   30 * time.Second,
 		ReconcileStaleAfter: time.Minute,
@@ -99,6 +106,9 @@ func (c *Config) Validate() error {
 	}
 	if c.LeaseTTL <= 0 {
 		c.LeaseTTL = engine.DefaultLeaseTTL
+	}
+	if c.RelayInterval <= 0 {
+		c.RelayInterval = time.Second
 	}
 	if _, err := parseLevel(c.LogLevel); err != nil {
 		return err
@@ -150,6 +160,7 @@ type Stack struct {
 	Runtime    *engine.Runtime
 	Tools      *tool.Registry
 	Executor   *effects.Executor
+	Relay      *outbox.Relay
 	Reaper     *lease.Reaper
 	Reconciler *effects.Reconciler
 	Workers    []*worker.Worker
@@ -188,10 +199,21 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		return nil, fmt.Errorf("wiring: open store: %w", err)
 	}
 
-	// Buffered generously: a full channel blocks the engine, and dropping
-	// into the recovery scan for want of a slot would be a self-inflicted
-	// latency spike.
+	// Buffered generously: a full channel blocks the relay, and stalling the
+	// relay for want of a slot would delay every committed task behind it.
 	dispatcher := inproc.New(1024)
+
+	// The relay is built before the engine because the engine holds its Wake.
+	relay, err := outbox.New(outbox.Config{
+		Store:      store,
+		Dispatcher: dispatcher,
+		Interval:   cfg.RelayInterval,
+		Logger:     log,
+	})
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("wiring: build relay: %w", err)
+	}
 
 	eng, err := engine.New(engine.Config{
 		Store:        store,
@@ -202,6 +224,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		LeaseTTL:     cfg.LeaseTTL,
 		Agent:        agent.Name,
 		AgentVersion: agent.Version,
+		Wake:         relay.Wake,
 		Logger:       log,
 	})
 	if err != nil {
@@ -224,11 +247,11 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 	}
 
 	reaper, err := lease.New(lease.Config{
-		Store:      store,
-		Dispatcher: dispatcher,
-		Clock:      clk,
-		Interval:   cfg.ScanInterval,
-		Logger:     log,
+		Store:    store,
+		Clock:    clk,
+		Interval: cfg.ScanInterval,
+		Wake:     relay.Wake,
+		Logger:   log,
 	})
 	if err != nil {
 		_ = store.Close()
@@ -271,6 +294,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		Runtime:    engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: cfg.ScanInterval}),
 		Tools:      agent.Tools,
 		Executor:   executor,
+		Relay:      relay,
 		Reaper:     reaper,
 		Reconciler: reconciler,
 		Workers:    workers,
@@ -291,6 +315,15 @@ func (s *Stack) Serve(ctx context.Context) {
 			}
 		}(w)
 	}
+
+	// The relay before the recovery loop: a restart should publish what the
+	// process that died already committed before it starts looking for what
+	// else might be stuck.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = s.Relay.Run(ctx)
+	}()
 
 	wg.Add(1)
 	go func() {

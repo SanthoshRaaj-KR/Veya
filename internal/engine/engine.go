@@ -41,6 +41,7 @@ type Engine struct {
 	leaseTTL     time.Duration
 	agent        string
 	agentVersion string
+	wake         func()
 	log          *slog.Logger
 }
 
@@ -66,6 +67,15 @@ type Config struct {
 	// onto every run it starts. Runs for any other agent are left alone.
 	Agent        string
 	AgentVersion string
+
+	// Wake tells the outbox relay that something was just committed.
+	//
+	// It is a plain optional func rather than a port because it carries no
+	// guarantee: dropping every call would cost latency and nothing else, since
+	// the delivery is already committed and the relay sweeps on a timer. The
+	// type is the documentation — safety went into the transaction, and this is
+	// the liveness half that is allowed to be missed.
+	Wake func()
 
 	Logger *slog.Logger
 }
@@ -97,6 +107,10 @@ func New(cfg Config) (*Engine, error) {
 	if leaseTTL <= 0 {
 		leaseTTL = DefaultLeaseTTL
 	}
+	wake := cfg.Wake
+	if wake == nil {
+		wake = func() {} // no relay to nudge; its ticker will find the row
+	}
 	return &Engine{
 		store:        cfg.Store,
 		dispatcher:   cfg.Dispatcher,
@@ -106,6 +120,7 @@ func New(cfg Config) (*Engine, error) {
 		leaseTTL:     leaseTTL,
 		agent:        cfg.Agent,
 		agentVersion: cfg.AgentVersion,
+		wake:         wake,
 		log:          log,
 	}, nil
 }
@@ -207,7 +222,13 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 	}
 }
 
-// dispatch commits a decision as work and hands it to the dispatcher.
+// dispatch commits a decision as work, together with the intent to deliver it.
+//
+// The task, the event recording it, and the outbox row are one transaction.
+// Publishing used to happen after the commit, which left a window where the
+// task was durable and nobody would ever be told about it — a run that stops
+// with nothing failed and nothing to retry. Now the only thing after the commit
+// is a hint to the relay, and a hint that is lost costs latency, not work.
 func (e *Engine) dispatch(ctx context.Context, run core.Run, d core.Decision) error {
 	taskID := e.ids.NewTaskID()
 
@@ -231,11 +252,14 @@ func (e *Engine) dispatch(ctx context.Context, run core.Run, d core.Decision) er
 		if err := tx.CreateTask(ctx, task); err != nil {
 			return err
 		}
-		return core.Append(ctx, tx, run.ID, core.EventTaskCreated, d.StepID, core.TaskCreatedData{
+		if err := core.Append(ctx, tx, run.ID, core.EventTaskCreated, d.StepID, core.TaskCreatedData{
 			TaskID:   taskID,
 			TaskType: d.TaskType,
 			Payload:  d.Payload,
-		})
+		}); err != nil {
+			return err
+		}
+		return tx.EnqueueDelivery(ctx, taskID)
 	})
 
 	switch {
@@ -251,16 +275,10 @@ func (e *Engine) dispatch(ctx context.Context, run core.Run, d core.Decision) er
 	e.log.Info("task created", "run_id", run.ID, "task_id", taskID,
 		"step_id", d.StepID, "tool", d.TaskType)
 
-	// Published after the commit, which leaves a window: if the process dies
-	// here, the task is durable but undelivered. That is survivable because
-	// PendingTasks finds it on restart — see Runtime.
-	//
-	// Layer 3 closes the window properly by writing an outbox row inside the
-	// transaction above and having a relay publish it.
-	if err := e.dispatcher.Publish(ctx, taskID); err != nil {
-		e.log.Warn("publish failed; task will be recovered by scan",
-			"task_id", taskID, "error", err)
-	}
+	// Everything durable is already done. This only saves the relay from
+	// waiting out its ticker, so it has no error to check and nothing to
+	// recover: a wake that never arrives is a slower delivery, not a lost one.
+	e.wake()
 	return nil
 }
 

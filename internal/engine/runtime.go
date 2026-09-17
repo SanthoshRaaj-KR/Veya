@@ -12,19 +12,25 @@ import (
 // Runtime is the recovery loop: it periodically re-reads the store and
 // republishes or re-advances anything that has stalled.
 //
-// It exists because the engine holds no authoritative state in memory. Two
-// things can leave work stranded, and both are found by scanning:
+// It exists because the engine holds no authoritative state in memory.
 //
-//   - A task committed but never published, because the process died between
-//     the transaction and the Publish call. Layer 3's outbox closes that
-//     window; until then the scan is what covers it.
+// The outbox closed the window this used to be the only answer for — a task can
+// no longer commit without its delivery intent committing too. What is left is
+// the failure the outbox cannot see:
+//
+//   - A delivery that was published and then lost in transit. The outbox row
+//     says published, which is true, and the message is gone anyway: the
+//     process holding an in-process channel died, or a stream was purged. Only
+//     the task's own PENDING status still reflects that nothing happened.
 //   - A run started by a different process — the CLI creates a run, and the
 //     runtime process is what has to notice and advance it.
 //
-// The scan republishes tasks that may already be in flight. That is deliberate
-// and safe: the conditional claim rejects the duplicate. Preferring a
-// redundant delivery over a missed one is the same trade the whole system
-// makes — a duplicate is visible and cheap, stalled work is silent.
+// So the outbox guarantees a task is announced, and the scan covers the case
+// where it was announced to nobody. The scan republishes tasks that may already
+// be in flight, which is deliberate and safe: the conditional claim rejects the
+// duplicate. Preferring a redundant delivery over a missed one is the same
+// trade the whole system makes — a duplicate is visible and cheap, stalled work
+// is silent.
 type Runtime struct {
 	engine     *Engine
 	store      core.Store

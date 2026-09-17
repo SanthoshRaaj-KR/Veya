@@ -19,6 +19,7 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
 	"github.com/SanthoshRaaj-KR/Veya/internal/lease"
+	"github.com/SanthoshRaaj-KR/Veya/internal/outbox"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
 	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
 	"github.com/SanthoshRaaj-KR/Veya/internal/worker"
@@ -265,6 +266,7 @@ type harness struct {
 	tools      *tool.Registry
 	engine     *engine.Engine
 	executor   *effects.Executor
+	relay      *outbox.Relay
 	reaper     *lease.Reaper
 	runtime    *engine.Runtime
 
@@ -286,6 +288,19 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 	store := memory.New(clk)
 	tools := tool.New()
 
+	// Tasks reach the dispatcher only through the outbox relay, so the harness
+	// has to run one. Its short interval is a backstop; Wake carries the
+	// normal path.
+	relay, err := outbox.New(outbox.Config{
+		Store:      store,
+		Dispatcher: disp,
+		Interval:   5 * time.Millisecond,
+		Logger:     quietLogger(),
+	})
+	if err != nil {
+		t.Fatalf("outbox.New: %v", err)
+	}
+
 	eng, err := engine.New(engine.Config{
 		Store:        store,
 		Dispatcher:   disp,
@@ -295,6 +310,7 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 		LeaseTTL:     30 * time.Second,
 		Agent:        testAgent,
 		AgentVersion: "v1",
+		Wake:         relay.Wake,
 		Logger:       quietLogger(),
 	})
 	if err != nil {
@@ -313,10 +329,10 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 	}
 
 	reaper, err := lease.New(lease.Config{
-		Store:      store,
-		Dispatcher: disp,
-		Clock:      clk,
-		Logger:     quietLogger(),
+		Store:  store,
+		Clock:  clk,
+		Wake:   relay.Wake,
+		Logger: quietLogger(),
 	})
 	if err != nil {
 		t.Fatalf("lease.New: %v", err)
@@ -329,6 +345,7 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 		tools:      tools,
 		engine:     eng,
 		executor:   executor,
+		relay:      relay,
 		reaper:     reaper,
 		runtime:    engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: 10 * time.Millisecond}),
 	}
@@ -351,6 +368,14 @@ func (h *harness) startWorkers(t *testing.T, n int) { t.Helper(); h.spawn(t, n) 
 func (h *harness) spawn(t *testing.T, n int) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
+
+	// Nothing reaches a worker without the relay: the engine commits delivery
+	// intent and stops there.
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		_ = h.relay.Run(ctx)
+	}()
 
 	for i := 0; i < n; i++ {
 		w, err := worker.New(worker.Config{

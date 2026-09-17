@@ -13,6 +13,11 @@
 // and thereby fences the old owner out. A reaper that reassigned tasks by
 // writing directly would be the largest hole in the system, because it would
 // be the one actor able to create two live owners.
+//
+// For the same reason it does not publish. A reclaimed task's delivery intent
+// is written inside the transaction that makes it PENDING again, exactly as it
+// was at creation — this path exists because something already failed, and it
+// is the last place that should introduce a new way to lose work.
 package lease
 
 import (
@@ -32,22 +37,30 @@ const ReaperWorkerID = "veya-reaper"
 
 // Reaper returns expired work to the queue.
 type Reaper struct {
-	store      core.Store
-	dispatcher core.Dispatcher
-	clock      core.Clock
-	interval   time.Duration
-	batch      int
-	log        *slog.Logger
+	store    core.Store
+	clock    core.Clock
+	interval time.Duration
+	batch    int
+	wake     func()
+	log      *slog.Logger
 
 	registerOnce sync.Once
 	registerErr  error
 }
 
-// Config wires a Reaper. Store, Dispatcher and Clock are required.
+// Config wires a Reaper. Store and Clock are required.
 type Config struct {
-	Store      core.Store
-	Dispatcher core.Dispatcher
-	Clock      core.Clock
+	Store core.Store
+	Clock core.Clock
+
+	// Wake nudges the outbox relay after a reclaim, and may be nil.
+	//
+	// The reaper does not publish. A reclaimed task gets its delivery intent
+	// inside the same transaction that makes it PENDING again, so there is no
+	// moment where it is runnable and unannounced — which matters more here
+	// than anywhere else, since this code path exists precisely because
+	// something already went wrong.
+	Wake func()
 
 	// Interval between sweeps. Defaults to 5s.
 	//
@@ -68,8 +81,6 @@ func New(cfg Config) (*Reaper, error) {
 	switch {
 	case cfg.Store == nil:
 		return nil, errors.New("lease: Store is required")
-	case cfg.Dispatcher == nil:
-		return nil, errors.New("lease: Dispatcher is required")
 	case cfg.Clock == nil:
 		return nil, errors.New("lease: Clock is required")
 	}
@@ -86,14 +97,18 @@ func New(cfg Config) (*Reaper, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	wake := cfg.Wake
+	if wake == nil {
+		wake = func() {}
+	}
 
 	return &Reaper{
-		store:      cfg.Store,
-		dispatcher: cfg.Dispatcher,
-		clock:      cfg.Clock,
-		interval:   interval,
-		batch:      batch,
-		log:        log,
+		store:    cfg.Store,
+		clock:    cfg.Clock,
+		interval: interval,
+		batch:    batch,
+		wake:     wake,
+		log:      log,
 	}, nil
 }
 
@@ -186,11 +201,11 @@ func (r *Reaper) ReapOnce(ctx context.Context) (int, error) {
 		}
 		if requeued {
 			reclaimed++
-			if err := r.dispatcher.Publish(ctx, stale.TaskID); err != nil {
-				r.log.Warn("republish after reclaim failed; the scan will find it",
-					"task_id", stale.TaskID, "error", err)
-			}
 		}
+	}
+	if reclaimed > 0 {
+		// The deliveries are committed; this only saves the relay a tick.
+		r.wake()
 	}
 	return reclaimed, nil
 }
@@ -258,6 +273,15 @@ func (r *Reaper) reclaim(ctx context.Context, stale core.Lease, now time.Time) (
 			Reason:  reason,
 		}); err != nil {
 			return err
+		}
+
+		// Delivery intent joins the same transaction, so the task becomes
+		// runnable and announced at the same instant. A dead-lettered task gets
+		// none: nobody should be told to work on it.
+		if next == core.TaskPending {
+			if err := tx.EnqueueDelivery(ctx, task.ID); err != nil {
+				return err
+			}
 		}
 
 		// Release straight away. The reaper does not execute anything, so

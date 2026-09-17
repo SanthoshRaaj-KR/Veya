@@ -184,11 +184,22 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 		}); err != nil {
 			return err
 		}
-		return core.Append(ctx, tx, task.RunID, followUp, task.StepID, core.TaskRetryScheduledData{
+		if err := core.Append(ctx, tx, task.RunID, followUp, task.StepID, core.TaskRetryScheduledData{
 			TaskID:  id,
 			Attempt: task.Attempt,
 			Reason:  reason,
-		})
+		}); err != nil {
+			return err
+		}
+		if !retry {
+			return nil
+		}
+		// A retry makes the task dispatchable again, so it needs delivery
+		// intent exactly as its creation did. Republishing after the commit
+		// instead would put back the window this layer removed — and a task
+		// stranded on its second attempt is no more visible than one stranded
+		// on its first.
+		return tx.EnqueueDelivery(ctx, id)
 	})
 	switch {
 	case errors.Is(err, core.ErrFenced):
@@ -204,9 +215,7 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 
 	if retry {
 		e.log.Info("task failed, retrying", "task_id", id, "attempt", attempt, "error", reason)
-		if err := e.dispatcher.Publish(ctx, id); err != nil {
-			e.log.Warn("republish failed; task will be recovered by scan", "task_id", id, "error", err)
-		}
+		e.wake()
 		return nil
 	}
 
