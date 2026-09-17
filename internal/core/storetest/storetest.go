@@ -13,6 +13,7 @@
 //	CreateTask      UNIQUE (run_id, step_id)        — idempotent task creation
 //	TransitionTask  conditional on current status   — who claims the task
 //	AppendEvent     PRIMARY KEY (run_id, seq)       — gapless history
+//	EnqueueDelivery commits with the task it announces — no stranded work
 //
 // A store that quietly permits any of these to happen twice is broken in a way
 // that would not show up until a duplicate side effect reached a customer.
@@ -93,6 +94,7 @@ func RunStoreSuite(t *testing.T, newStore NewStore) {
 	}
 	tests = append(tests, effectContracts()...)
 	tests = append(tests, leaseContracts()...)
+	tests = append(tests, outboxContracts()...)
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -51,6 +51,14 @@ type Store interface {
 	// both wasteful and misleading.
 	UnresolvedEffects(ctx context.Context, before time.Time, limit int) ([]Effect, error)
 
+	// PendingDeliveries returns unpublished outbox rows, oldest first. The
+	// relay's input.
+	//
+	// A row here is a task that has been committed and not yet handed to the
+	// dispatcher. The list is normally empty; a row that persists across sweeps
+	// means the broker is refusing work.
+	PendingDeliveries(ctx context.Context, limit int) ([]Delivery, error)
+
 	// ExpiredLeases returns leases whose owner has gone silent, on tasks that
 	// are still supposed to be worked on, oldest expiry first. The reaper's
 	// input.
@@ -95,6 +103,30 @@ type Tx interface {
 	// AppendEvent writes one event. Returns ErrSeqConflict if (run, seq) is
 	// taken.
 	AppendEvent(ctx context.Context, e Event) error
+
+	// EnqueueDelivery records the intent to hand a task to a worker.
+	//
+	// It belongs in the same transaction as whatever made the task
+	// dispatchable — its creation, a retry, a reclaim — because that is the
+	// entire point. Publishing outside the transaction is the dual write this
+	// closes; see outbox.go.
+	//
+	// Returns ErrNotFound if the task does not exist.
+	EnqueueDelivery(ctx context.Context, taskID TaskID) error
+
+	// MarkDelivered records that deliveries reached the dispatcher.
+	//
+	// It is deliberately after the publish, never before. The other ordering
+	// would lose a delivery whenever the process died in between, and this
+	// ordering only duplicates one — which the conditional claim absorbs.
+	MarkDelivered(ctx context.Context, ids []DeliveryID) error
+
+	// FailDelivery counts a failed publish and records why.
+	//
+	// The row stays pending: the relay does not give up on a delivery, because
+	// a task nobody is told about is a stuck run and there is no attempt count
+	// at which that becomes acceptable.
+	FailDelivery(ctx context.Context, id DeliveryID, cause string) error
 
 	// ReserveEffect inserts a ledger row, relying on the unique constraint on
 	// the idempotency key.

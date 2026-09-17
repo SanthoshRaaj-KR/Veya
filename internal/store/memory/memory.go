@@ -53,9 +53,19 @@ type state struct {
 	effects   map[core.IdempotencyKey]core.Effect // enforces UNIQUE (idempotency_key)
 	leases    map[core.TaskID]core.Lease
 	workers   map[string]core.Worker
+
+	// The outbox. Published rows are kept and flagged rather than removed, so
+	// "was this task ever announced, and when?" survives the answer.
+	deliveries map[core.DeliveryID]core.Delivery
+	published  map[core.DeliveryID]bool
+
+	// Shared with the Store, not cloned: a sequence is not rolled back, and
+	// reusing an ID after a rollback would let a relay mark the wrong row.
+	deliverySeq *int64
 }
 
 func newState() *state {
+	var seq int64
 	return &state{
 		runs:      map[core.RunID]core.Run{},
 		tasks:     map[core.TaskID]core.Task{},
@@ -64,6 +74,10 @@ func newState() *state {
 		effects:   map[core.IdempotencyKey]core.Effect{},
 		leases:    map[core.TaskID]core.Lease{},
 		workers:   map[string]core.Worker{},
+
+		deliveries:  map[core.DeliveryID]core.Delivery{},
+		published:   map[core.DeliveryID]bool{},
+		deliverySeq: &seq,
 	}
 }
 
@@ -76,6 +90,10 @@ func (s *state) clone() *state {
 		effects:   make(map[core.IdempotencyKey]core.Effect, len(s.effects)),
 		leases:    make(map[core.TaskID]core.Lease, len(s.leases)),
 		workers:   make(map[string]core.Worker, len(s.workers)),
+
+		deliveries:  make(map[core.DeliveryID]core.Delivery, len(s.deliveries)),
+		published:   make(map[core.DeliveryID]bool, len(s.published)),
+		deliverySeq: s.deliverySeq, // shared on purpose; see newState
 	}
 	for k, v := range s.runs {
 		c.runs[k] = v
@@ -97,6 +115,12 @@ func (s *state) clone() *state {
 	}
 	for k, v := range s.workers {
 		c.workers[k] = v
+	}
+	for k, v := range s.deliveries {
+		c.deliveries[k] = v
+	}
+	for k, v := range s.published {
+		c.published[k] = v
 	}
 	return c
 }
