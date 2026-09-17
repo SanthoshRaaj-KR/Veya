@@ -3,6 +3,7 @@
 BIN       := bin
 PKG       := ./...
 VEYA_DSN  ?= postgres://veya:veya@localhost:5433/veya?sslmode=disable
+VEYA_NATS ?= nats://127.0.0.1:4222
 
 # The module cache is authoritative; nothing here reaches the network.
 GO := GOFLAGS=-mod=mod go
@@ -25,8 +26,9 @@ test-race: ## Run unit tests under the race detector (needs a C toolchain)
 	CGO_ENABLED=1 $(GO) test -race -count=2 $(PKG)
 
 .PHONY: test-integration
-test-integration: ## Run tests against a live PostgreSQL (needs `make up`)
-	VEYA_TEST_DSN="$(VEYA_DSN)" $(GO) test -tags=integration -count=1 $(PKG)
+test-integration: ## Run tests against live PostgreSQL and NATS (needs `make up`)
+	VEYA_TEST_DSN="$(VEYA_DSN)" VEYA_TEST_NATS_URL="$(VEYA_NATS)" \
+		$(GO) test -tags=integration -count=1 $(PKG)
 
 .PHONY: vet
 vet: ## Run go vet
@@ -45,7 +47,9 @@ up: ## Start PostgreSQL and NATS
 	docker compose up -d
 	@echo "waiting for postgres..."
 	@until docker compose exec -T postgres pg_isready -U veya -d veya >/dev/null 2>&1; do sleep 1; done
-	@echo "ready. dsn: $(VEYA_DSN)"
+	@echo "waiting for nats..."
+	@until docker compose exec -T nats wget -q -O- http://localhost:8222/healthz >/dev/null 2>&1; do sleep 1; done
+	@echo "ready. dsn: $(VEYA_DSN)  nats: $(VEYA_NATS)"
 
 .PHONY: down
 down: ## Stop containers and remove volumes

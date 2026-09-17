@@ -1,9 +1,9 @@
 # Local infrastructure for Veya.
 #
 #   postgres  — the authoritative store: runs, events, tasks, effects, leases.
-#   nats      — task delivery only. Unused until Layer 3; declared now so the
-#               local environment does not change shape when dispatch moves
-#               off Postgres.
+#   nats      — task delivery only. Nothing durable lives here: if the whole
+#               stream vanished, every task would still be PENDING in Postgres
+#               and the recovery scan would republish it.
 #
 # Usage: `make up` / `make down`.
 
@@ -32,7 +32,11 @@ services:
   nats:
     image: nats:2-alpine
     container_name: veya-nats
-    command: ["--jetstream", "--store_dir=/data"]
+    # -m 8222 is what makes the monitoring endpoint exist. Publishing the port
+    # without it leaves the healthcheck below permanently failing against a
+    # socket nothing is listening on, which reads as "NATS is broken" when the
+    # server is in fact fine.
+    command: ["--jetstream", "--store_dir=/data", "-m", "8222"]
     ports:
       - "4222:4222"   # client
       - "8222:8222"   # monitoring
