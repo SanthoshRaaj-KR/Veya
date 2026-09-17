@@ -30,6 +30,22 @@
 // idempotency keys are derived from logical position rather than by hashing a
 // request body, since the same document can have two encodings and would hash
 // to two different keys.
+//
+// # A failed statement may end the transaction
+//
+// On PostgreSQL it does: after any error the transaction is aborted and every
+// later statement in it fails too, whatever the caller did with the Go error.
+// The in-memory adapter keeps going, so code shaped like
+//
+//	if err := tx.CreateRun(ctx, r); err != nil && !errors.Is(err, core.ErrConflict) {
+//	        return err          // "already exists, carry on"
+//	}
+//	tx.CreateTask(ctx, task)    // fails on PostgreSQL regardless
+//
+// works in memory and cannot work on PostgreSQL. This suite does not assert
+// either behaviour, because the contract is the weaker one: inside RunInTx, an
+// error ends the transaction. A caller that wants to tolerate a conflict has to
+// do it in a transaction of its own.
 package storetest
 
 import (
