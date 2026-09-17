@@ -14,6 +14,8 @@
 //	veya run start --agent NAME  create a run for the runtime to pick up
 //	veya run show RUN_ID         status, output, tasks
 //	veya run history RUN_ID      the full event log
+//	veya effects                 external actions with an unresolved outcome
+//	veya outbox                  committed work that has not reached a worker
 package main
 
 import (
@@ -50,6 +52,7 @@ Commands:
   effects               external actions whose outcome is still unknown
   effects show KEY      one effect in full
   effects resolve KEY   record what a human established
+  outbox                committed work that has not reached a worker
 
 Run "veya COMMAND --help" for flags.
 `
@@ -67,6 +70,8 @@ func run(args []string) error {
 		return cmdRun(args[1:])
 	case "effects":
 		return cmdEffects(args[1:])
+	case "outbox":
+		return cmdOutbox(args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil

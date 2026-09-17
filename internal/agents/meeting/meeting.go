@@ -1,4 +1,13 @@
-package main
+// Package meeting is the built-in demo agent: the meeting assistant from
+// docs/architecture-primer.md.
+//
+// It lives here rather than inside a binary because more than one process runs
+// it. A veya-worker executing this agent's tools and the veya-runtime advancing
+// its runs have to agree about what the tools are and how they are classified
+// — two copies that drifted would mean one process treating a send as
+// QUERYABLE and the other as UNRECONCILABLE, which is the sort of disagreement
+// nobody notices until an outage.
+package meeting
 
 import (
 	"context"
@@ -13,8 +22,6 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
 )
 
-// The built-in demo agent: the meeting assistant from docs/architecture-primer.md.
-//
 // Three steps — look the meeting up, summarize it, send the summary — chosen
 // because between them they exercise all three interesting effect classes:
 //
@@ -23,15 +30,21 @@ import (
 //	send_summary   QUERYABLE          can be asked what it did afterwards
 //
 // The providers are fakes, but they honour their declared contracts, which is
-// the part that matters: a tool that claims to be QUERYABLE and cannot
-// actually answer is a lie the runtime would only discover during an outage.
+// the part that matters: a tool that claims to be QUERYABLE and cannot actually
+// answer is a lie the runtime would only discover during an outage.
 
+// Name and Version identify the agent. Version is pinned onto every run it
+// starts and never changes for the life of that run.
 const (
-	demoAgentName    = "meeting_assistant"
-	demoAgentVersion = "v1"
+	Name    = "meeting_assistant"
+	Version = "v1"
 )
 
-func demoDecider() *decider.Static {
+// NewDecider returns the fixed three-step plan. A real decider asks a model;
+// this one does not, because Layer 3 is about execution and a non-deterministic
+// plan would make every failure test flaky for reasons unrelated to what it
+// tests.
+func NewDecider() *decider.Static {
 	return decider.NewStatic(
 		decider.Step{Tool: "fetch_meeting", Payload: json.RawMessage(`{"meeting_id":"M-1042"}`)},
 		decider.Step{Tool: "summarize", Payload: json.RawMessage(`{"style":"brief"}`)},
@@ -39,7 +52,11 @@ func demoDecider() *decider.Static {
 	)
 }
 
-func demoTools() *tool.Registry {
+// NewTools builds the agent's tool registry, with a fresh set of fake
+// providers. Each process that hosts the agent gets its own — which is why the
+// fakes' memory of what they sent is per-process, and why the demo is honest
+// about being a demo.
+func NewTools() *tool.Registry {
 	r := tool.New()
 	mailbox := newFakeMailbox()
 	model := newFakeModel()

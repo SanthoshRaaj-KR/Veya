@@ -1,15 +1,18 @@
 // Command veya-runtime is the execution engine.
 //
-// It advances runs, dispatches tasks, and hosts the workers that execute them.
-// In Layer 1 the engine and its workers share a process and a channel; Layer 3
-// moves delivery onto NATS JetStream and lets workers live elsewhere, which
-// should change this file and nothing in internal/engine.
+// It advances runs, publishes committed work, reclaims abandoned leases,
+// reconciles unresolved effects, and — unless told otherwise — hosts workers
+// too. Everything single-purpose lives here: one runtime process per
+// deployment, with veya-worker for capacity.
 //
 // Usage:
 //
-//	veya-runtime                       # serve against PostgreSQL
-//	veya-runtime --demo                # start one demo run, wait for it, exit
-//	veya-runtime --store memory --demo  # same, no database needed
+//	veya-runtime                            # serve, workers in this process
+//	veya-runtime --dispatch jetstream       # workers may live elsewhere
+//	veya-runtime --dispatch postgres        # same, with no broker
+//	veya-runtime --workers 0                # engine only; veya-worker executes
+//	veya-runtime --demo                     # one demo run, wait for it, exit
+//	veya-runtime --store memory --demo      # same, no database needed
 package main
 
 import (
@@ -22,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SanthoshRaaj-KR/Veya/internal/agents/meeting"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 	"github.com/SanthoshRaaj-KR/Veya/internal/wiring"
 )
@@ -40,13 +44,17 @@ func run() error {
 	fs := flag.NewFlagSet("veya-runtime", flag.ExitOnError)
 	fs.StringVar(&cfg.Store, "store", cfg.Store, "state store: memory or postgres")
 	fs.StringVar(&cfg.DSN, "dsn", cfg.DSN, "PostgreSQL connection string")
-	fs.IntVar(&cfg.Workers, "workers", cfg.Workers, "in-process workers to run")
+	fs.StringVar(&cfg.Dispatch, "dispatch", cfg.Dispatch, "task delivery: inproc, postgres or jetstream")
+	fs.StringVar(&cfg.NATSURL, "nats", cfg.NATSURL, "NATS server, when --dispatch=jetstream")
+	fs.IntVar(&cfg.Workers, "workers", cfg.Workers, "workers to run in this process; 0 leaves execution to veya-worker")
 	fs.DurationVar(&cfg.ScanInterval, "scan-interval", cfg.ScanInterval, "recovery scan period")
+	fs.DurationVar(&cfg.RelayInterval, "relay-interval", cfg.RelayInterval, "outbox relay backstop period")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "debug, info, warn or error")
 	fs.BoolVar(&demo, "demo", false, "start one demo run, wait for it to finish, then exit")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+	cfg.Role = wiring.RoleRuntime
 
 	// Cancelled on SIGINT/SIGTERM so shutdown is orderly: workers finish what
 	// they hold, and anything still PENDING is recovered by the next process
@@ -55,10 +63,10 @@ func run() error {
 	defer stop()
 
 	stack, err := wiring.Build(ctx, cfg, wiring.Agent{
-		Name:    demoAgentName,
-		Version: demoAgentVersion,
-		Decider: demoDecider(),
-		Tools:   demoTools(),
+		Name:    meeting.Name,
+		Version: meeting.Version,
+		Decider: meeting.NewDecider(),
+		Tools:   meeting.NewTools(),
 	})
 	if err != nil {
 		return err
@@ -66,7 +74,7 @@ func run() error {
 	defer func() { _ = stack.Close() }()
 
 	stack.Logger.Info("veya-runtime starting",
-		"agent", stack.Engine.Agent(), "store", cfg.Store,
+		"agent", stack.Engine.Agent(), "store", cfg.Store, "dispatch", cfg.Dispatch,
 		"workers", cfg.Workers, "tools", stack.Tools.Names())
 
 	if demo {

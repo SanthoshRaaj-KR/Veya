@@ -63,6 +63,20 @@ demo: ## Run the built-in agent end to end against PostgreSQL
 demo-memory: ## Same demo, in-memory store, no Docker
 	$(GO) run ./cmd/veya-runtime --store memory --demo
 
+.PHONY: demo-jetstream
+demo-jetstream: ## Same demo, delivered over NATS JetStream
+	$(GO) run ./cmd/veya-runtime --dsn "$(VEYA_DSN)" --dispatch jetstream --nats "$(VEYA_NATS)" --demo
+
+# The two halves of a distributed setup. Run `make runtime` in one terminal and
+# `make worker` in another, then `veya run start` to give them something to do.
+.PHONY: runtime
+runtime: ## Engine only, no workers; execution is left to veya-worker
+	$(GO) run ./cmd/veya-runtime --dsn "$(VEYA_DSN)" --dispatch postgres --workers 0
+
+.PHONY: worker
+worker: ## A standalone worker process
+	$(GO) run ./cmd/veya-worker --dsn "$(VEYA_DSN)" --dispatch postgres --workers 4
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	rm -rf $(BIN)

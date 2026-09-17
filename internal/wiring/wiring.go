@@ -86,6 +86,17 @@ type Config struct {
 	NATSURL      string        // required when Dispatch is jetstream
 	Workers      int           // in-process workers to run
 	ScanInterval time.Duration // recovery loop period
+
+	// WorkerPrefix distinguishes this process's workers from every other
+	// process's.
+	//
+	// Worker IDs were "worker-0" when one process held them all. With workers
+	// in several processes that name collides, and a colliding worker ID is not
+	// cosmetic: a lease points at a worker row, so two machines would be
+	// claiming tasks as the same identity and a lease would no longer say which
+	// process to go and look at. Defaults to the hostname.
+	WorkerPrefix string
+
 	LeaseTTL     time.Duration // how long a claim lasts without a heartbeat
 
 	// RelayInterval is the outbox relay's backstop period. The engine wakes the
@@ -172,8 +183,14 @@ func (c *Config) Validate() error {
 			"an in-memory store is not shared with the runtime")
 	}
 
-	if c.Workers < 1 {
-		c.Workers = 1
+	// Zero workers is a legitimate runtime: the engine advances runs and the
+	// relay publishes them, while veya-worker processes do the executing. A
+	// worker process with zero workers is just a process that does nothing.
+	if c.Workers < 0 {
+		c.Workers = 0
+	}
+	if c.Role == RoleWorker && c.Workers < 1 {
+		return errors.New("wiring: --workers must be at least 1 for a worker process")
 	}
 	if c.ScanInterval <= 0 {
 		c.ScanInterval = 2 * time.Second
@@ -183,6 +200,13 @@ func (c *Config) Validate() error {
 	}
 	if c.RelayInterval <= 0 {
 		c.RelayInterval = time.Second
+	}
+	if c.WorkerPrefix == "" {
+		if host, err := os.Hostname(); err == nil && host != "" {
+			c.WorkerPrefix = host
+		} else {
+			c.WorkerPrefix = "local"
+		}
 	}
 	if _, err := parseLevel(c.LogLevel); err != nil {
 		return err
@@ -387,7 +411,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 	workers := make([]*worker.Worker, 0, cfg.Workers)
 	for i := 0; i < cfg.Workers; i++ {
 		w, err := worker.New(worker.Config{
-			ID:         fmt.Sprintf("worker-%d", i),
+			ID:         fmt.Sprintf("%s-worker-%d", cfg.WorkerPrefix, i),
 			Engine:     eng,
 			Dispatcher: dispatcher,
 			Executor:   executor,
