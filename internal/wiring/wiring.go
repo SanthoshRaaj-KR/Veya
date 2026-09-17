@@ -5,9 +5,12 @@
 // build a stack. Everywhere else, code depends on core interfaces and has no
 // idea whether state lives in PostgreSQL or a map.
 //
-// This is the package to read to find out what Veya is actually made of, and
-// the package that should change when Layer 3 adds JetStream dispatch — if
-// that change reaches into engine/ or core/, the abstraction was wrong.
+// This is the package to read to find out what Veya is actually made of.
+//
+// Layer 3 was the test of that claim: adding PostgreSQL and JetStream dispatch
+// changed OpenDispatcher below, cmd/, and nothing in engine/ or core/. Three
+// transports that share no mechanism, and everything above this file is written
+// against one interface and cannot tell which it got.
 package wiring
 
 import (
@@ -97,7 +100,7 @@ type Config struct {
 	// process to go and look at. Defaults to the hostname.
 	WorkerPrefix string
 
-	LeaseTTL     time.Duration // how long a claim lasts without a heartbeat
+	LeaseTTL time.Duration // how long a claim lasts without a heartbeat
 
 	// RelayInterval is the outbox relay's backstop period. The engine wakes the
 	// relay on commit, so this only bounds how long work committed by another

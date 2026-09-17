@@ -700,11 +700,15 @@ Which is fine, because we already handle duplicate delivery — the second copy 
 
 ### Speeding up the relay
 
-Polling every few seconds works but adds latency: a task committed at 12:00:01 might not be published until 12:00:05. Postgres `LISTEN/NOTIFY` can wake the relay the moment a transaction commits.
+Polling every second works but adds latency: a task committed at 12:00:01 might not be published until 12:00:02. So the engine *nudges* the relay the moment its transaction commits — `relay.Wake()`, a plain function call.
 
-The important part is that the notification is an *optimization*, not a dependency. `LISTEN/NOTIFY` is not durable — if nobody is listening, the message is simply gone. So the relay keeps polling as a fallback. A lost notification costs a few seconds of latency; it never loses the row.
+The important part is that the nudge is an *optimization*, not a dependency. It is not durable and it is not delivered anywhere; if the relay is busy, the nudge is simply dropped. The relay keeps polling as a fallback. A lost nudge costs a second of latency; it never loses the row.
 
-> Polling hurts latency. It does not hurt correctness. Keep the poll even after adding NOTIFY.
+This is the safety/liveness split showing up in the shape of the code. The outbox row went into the transaction because it must never be lost. The nudge is a bare function that returns nothing and cannot fail, because losing it costs nothing.
+
+Across processes the same idea needs Postgres `LISTEN/NOTIFY` — a runtime on one machine cannot call a function on another. The reasoning is identical: `LISTEN/NOTIFY` is not durable either, so it would be an optimization over the same poll.
+
+> Polling hurts latency. It does not hurt correctness. Keep the poll whatever you add on top.
 
 ### JetStream is not the source of truth
 
@@ -721,6 +725,18 @@ A worker never trusts the message body as fact. It treats the message as a nudge
 Because of this, message duplication and message ordering stop being problems you have to solve. Duplicates lose the claim. Ordering across tasks doesn't matter, because tasks are independent units of work — order *within* a run comes from the version CAS and the fan-in join (§13), never from the order messages happen to arrive in.
 
 That's a stronger position than "our consumers tolerate reordering." The design makes message order irrelevant by construction.
+
+### The same argument, applied to the transport itself
+
+If the queue is only a nudge, then *which* queue barely matters — which is why Veya has three, and why they are interchangeable:
+
+| Transport | Workers can live | Needs |
+|---|---|---|
+| in-process channel | in this process only | nothing |
+| Postgres `SKIP LOCKED` | in any process | the database you already have |
+| NATS JetStream | anywhere | a NATS server |
+
+The Postgres one is worth a second look, because it exposes what the outbox is actually *for*. There, the queue and the database are the same system, so a committed task is already visible to every poller — publishing has nothing left to do. The outbox exists to cross a boundary between two systems that cannot share a transaction. Remove the boundary and it has no work to do.
 
 ---
 
@@ -1029,17 +1045,20 @@ That's the system. Not one perfect lock — a set of imperfect mechanisms arrang
 
 ## What is built today
 
-Layers 1 and 2 are implemented and tested against PostgreSQL. Everything this
-document describes about claims, leases, fencing tokens, the effect ledger,
-`UNKNOWN`, and reconciliation is running code rather than a plan.
+Layers 1, 2 and 3 are implemented and tested against PostgreSQL and NATS.
+Everything this document describes about claims, leases, fencing tokens, the
+effect ledger, `UNKNOWN`, reconciliation, **and the outbox (§12)** is running
+code rather than a plan.
 
-Three things it describes are still ahead:
+The outbox in particular is now real, which changes one sentence of §12: a task,
+its event, and the intent to deliver it commit in one transaction, and a relay
+publishes what committed. The window §12 warns about — a task that is durable
+and will never be announced — no longer exists. Delivery itself runs over any of
+three transports (an in-process channel, PostgreSQL `SKIP LOCKED`, or NATS
+JetStream), and workers can live in their own processes.
 
-- **The outbox and JetStream** (§12) are Layer 3. Today a task is published to
-  an in-process channel after its transaction commits, which leaves the window
-  §12 describes. It is survivable for the reason given there — the task is
-  durable as `PENDING` and a recovery scan finds it — but the window is real
-  until the relay exists.
+Two things this document describes are still ahead:
+
 - **Replay** (§13) is Layer 4, and arrives with the agent SDK. Today a run's
   next step is decided by walking its recorded history, which is the same
   shape, but there is no language model whose decisions need reading back yet.
@@ -1050,6 +1069,9 @@ When a tool's outcome cannot be settled by any mechanism, the effect parks in
 `UNKNOWN` and `veya effects` lists it. A person checks the provider and records
 what they found. That is the design working, not failing: §11 is where it says
 so.
+
+For a file-by-file guide to where all of this lives, see
+[code-map.md](code-map.md).
 
 ---
 

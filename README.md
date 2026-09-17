@@ -986,11 +986,33 @@ make demo-memory
 **Serving, and starting runs from elsewhere:**
 
 ```bash
-veya-runtime --dsn "$VEYA_DSN"              # engine + workers + recovery loop
+veya-runtime --dsn "$VEYA_DSN"              # engine + workers + every loop
 veya run start  --input '{"meeting_id":"M-1"}'
 veya run show    RUN_ID                      # status, output, tasks, effects
 veya run history RUN_ID                      # full event log (-v for payloads)
+veya outbox                                  # committed work not yet delivered
 ```
+
+**Workers in their own processes.** Delivery moves off the in-process channel;
+everything above `internal/dispatch` is unchanged.
+
+```bash
+make runtime     # terminal 1: engine only (--workers 0)
+make worker      # terminal 2: four workers, PostgreSQL SKIP LOCKED dispatch
+veya run start   # terminal 3
+```
+
+Or over NATS, with workers anywhere that can reach it:
+
+```bash
+veya-runtime --dispatch jetstream --nats "$VEYA_NATS" --workers 0
+veya-worker  --dispatch jetstream --nats "$VEYA_NATS" --workers 8
+```
+
+A worker holds a full engine — completing a task advances the run, and
+advancing needs a decider. Two processes advancing the same run is safe for the
+same reason two goroutines were: the compare-and-swap on `runs.version` lets one
+win and the losers find the work already done.
 
 **When the runtime refuses to guess:**
 
@@ -1017,12 +1039,13 @@ path.
 
 ```bash
 make test              # unit; no Docker, milliseconds
-make test-integration  # the same contract suite against live PostgreSQL
+make test-integration  # the same suites against live PostgreSQL and NATS
 make test-race         # needs a C toolchain
 ```
 
 **Not yet available.** The Python SDK, `examples/refund_agent.py`, and the
-`veya workers` command arrive with Layers 3–4; see the roadmap in §17.
+`veya workers` command arrive with Layer 4; see the roadmap in §17 and the
+"deliberately not built yet" table in [docs/code-map.md](docs/code-map.md).
 
 ---
 
@@ -1061,18 +1084,20 @@ Entries marked ✅ exist today; the rest arrive with the layer that needs them.
 ```
 veya/
 ├── cmd/
-│   ├── veya-runtime/    ✅ # execution engine + workers (+ outbox relay, L3)
-│   ├── veya-worker/        # standalone worker process (L3, when workers
-│   │                       #   can live outside the runtime)
-│   └── veya/            ✅ # operator CLI: migrate, run start/show/history
+│   ├── veya-runtime/    ✅ # engine, relay, recovery scan, reaper, reconciler
+│   ├── veya-worker/     ✅ # standalone worker process: execute and report
+│   └── veya/            ✅ # operator CLI: migrate, run, effects, outbox
 ├── internal/
 │   ├── core/            ✅ # domain types + port interfaces; imports nothing
 │   │   └── storetest/   ✅ # contract suite every Store adapter must pass
 │   ├── engine/          ✅ # run lifecycle, advancement, recovery scan
 │   ├── effects/         ✅ # the ledger in the execution path + reconciler
 │   ├── lease/           ✅ # the reaper: reclaiming abandoned work
+│   ├── outbox/          ✅ # the relay: committed delivery intent → dispatcher
 │   ├── worker/          ✅ # claim → execute → report
 │   ├── decider/         ✅ # what happens next (static now, LLM in L4)
+│   ├── agents/
+│   │   └── meeting/     ✅ # the built-in demo agent, shared by both binaries
 │   ├── tool/            ✅ # task type → handler registry
 │   ├── wiring/          ✅ # composition root; the only place naming adapters
 │   ├── clock/           ✅ # system + virtual time
@@ -1081,12 +1106,11 @@ veya/
 │   │   ├── memory/      ✅ # in-process adapter
 │   │   ├── postgres/    ✅ # the authoritative adapter
 │   │   └── migrations/  ✅ # embedded SQL + runner
-│   ├── outbox/             # transactional outbox relay (L3)
 │   ├── dispatch/
-│   │   ├── inproc/      ✅ # channel between engine and worker
-│   │   ├── jetstream/      # (L3)
-│   │   ├── postgres/       # SKIP LOCKED implementation (L3)
-│   │   └── redis/          # (L3, benchmark comparison)
+│   │   ├── inproc/      ✅ # channel; one process
+│   │   ├── postgres/    ✅ # SKIP LOCKED; many processes, no broker
+│   │   ├── jetstream/   ✅ # NATS; workers anywhere
+│   │   └── redis/          # (benchmark comparison, L7)
 │   └── telemetry/          # metrics, tracing, structured logs (L6)
 ├── sdk/
 │   └── python/             # Runtime, @agent, @tool, ctx primitives (L4)
@@ -1098,18 +1122,23 @@ veya/
 │   └── integration/        # (L7; adapter integration tests currently live
 │                           #   beside their package, behind a build tag)
 ├── docs/
-│   ├── architecture-primer.md ✅ # plain-English walkthrough
+│   ├── architecture-primer.md ✅ # plain-English walkthrough of the ideas
+│   ├── code-map.md            ✅ # file-by-file guide: what exists, what does not
 │   ├── architecture.md
 │   ├── data-model.md
 │   └── tool-contract.md
-├── docker-compose.yml   ✅ # PostgreSQL (:5433) + NATS
-├── Makefile             ✅ # build, test, migrate, up/down, demo
+├── docker-compose.yml   ✅ # PostgreSQL (:5433) + NATS (:4222)
+├── Makefile             ✅ # build, test, migrate, up/down, demo, runtime/worker
 └── go.mod               ✅
 ```
 
 Tests sit next to the code they cover. Unit tests need no Docker and run in
-milliseconds against the memory adapter; anything needing a live database is
-behind `//go:build integration` and runs via `make test-integration`.
+milliseconds against the memory adapter; anything needing a live database or
+broker is behind `//go:build integration` and runs via `make test-integration`.
+
+**New to the codebase?** [docs/code-map.md](docs/code-map.md) walks through
+every directory, says which layer it belongs to, and lists what is deliberately
+not built yet and why.
 
 ---
 
@@ -1123,6 +1152,15 @@ The alternative — JetStream as the event log with PostgreSQL as a projection �
 
 **A transactional outbox instead of dual writes.**
 Writing to PostgreSQL and publishing to JetStream as two independent operations leaves a window where a task exists but will never be delivered — a silently stuck run. Since the entire project exists to eliminate exactly this class of bug for user tool calls, allowing it in the runtime's own plumbing was not defensible. The cost is relay latency and occasional duplicate publishes; both are cheap, because delivery is at-least-once regardless.
+
+**A broker's redelivery is not a recovery mechanism.**
+The JetStream adapter acknowledges a message as soon as it is decoded, before the task is claimed. Holding the acknowledgement across the tool call looks safer and buys nothing: the broker cannot tell whether the task was claimed — only PostgreSQL can — so its redelivery would be a guess, and a correct guess is indistinguishable from the recovery scan finding the same `PENDING` task a moment later. The alternatives were worse in kind, not degree: thread acknowledgement through a port that exists to carry identity and nothing else, or run an ack deadline alongside the lease, which is two liveness mechanisms asserting the same thing and free to disagree. The cost is that a crash between ack and claim waits for the next scan.
+
+**The outbox is a boundary-crossing device, not a universal good.**
+Under the PostgreSQL dispatcher the transport and the store are the same database, so a committed task is already visible to every poller and `Publish` is a no-op. The outbox exists because a broker cannot participate in a PostgreSQL commit; remove that boundary and it has no work to do. Keeping the row anyway costs one write per task and keeps every backend on one code path, which is the cheaper of the two mistakes available.
+
+**A tool must be given the key it is supposed to send.**
+`IDEMPOTENT_BY_KEY` asserts that a provider deduplicates by idempotency key. Layer 3's audit found that handlers were never passed the key, so the runtime computed it, stored it, enforced uniqueness on it, and reasoned about it, while the one participant that had to transmit it never saw it. The class was a declaration a tool had no mechanism to honour. Handlers now receive a `core.ToolCall`; the lesson is that a classification means nothing unless the code path it describes is actually reachable.
 
 **Logical identity for idempotency, not request hashing.**
 Two refunds differing only in a free-text `reason` field hash differently and would both execute. `run_id:step_id:effect_seq` is stable under retry, replay, and payload edits. This requires deterministic step numbering, which in turn constrains agent code to deterministic ordering of durable calls — an accepted and documented tradeoff.
@@ -1180,10 +1218,27 @@ Not for performance reasons. Kafka is a distributed log without per-message ackn
 > `effect_seq` is always 1 because a task performs one tool call — the numbering
 > exists so sub-effects do not invalidate every key when the SDK lands.
 
-**Layer 3 — Distribution**
-- [ ] Transactional outbox and relay
-- [ ] JetStream dispatch, multi-worker
-- [ ] Lease reaper and recovery paths
+**Layer 3 — Distribution** ✅ *complete*
+- [x] Transactional outbox and relay
+- [x] JetStream dispatch, multi-worker
+- [x] Lease reaper and recovery paths *(landed early, with Layer 2)*
+
+> The dual write is gone: a task, its event, and the intent to deliver it
+> commit together, and a relay publishes what committed. Three transports —
+> an in-process channel, PostgreSQL `SKIP LOCKED`, NATS JetStream — are
+> interchangeable, and adding the second and third changed nothing in `core/`
+> or `engine/`. Workers run as their own processes (`veya-worker`); a runtime
+> started with `--workers 0` creates work that a separate process executes and
+> then advances, serialized by the same run-version CAS that serialized
+> goroutines.
+>
+> This layer was also the audit, and it found one real hole: `ToolHandler`
+> never received the idempotency key, so a tool declaring `IDEMPOTENT_BY_KEY`
+> had nothing to send its provider. Handlers now take a `core.ToolCall`.
+>
+> Still absent by design: outbox rows are never trimmed (Layer 6), and every
+> delivery goes to one subject because nothing routes by capability yet
+> (Layer 5).
 
 **Layer 4 — Agent execution**
 - [ ] Python SDK, `@agent` / `@tool`

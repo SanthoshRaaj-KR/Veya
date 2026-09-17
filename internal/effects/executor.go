@@ -10,10 +10,10 @@
 //
 // Write down what is about to happen, commit that, and only then act:
 //
-//	1. reserve the effect (PENDING) and COMMIT
-//	2. mark it RUNNING and COMMIT
-//	3. call the provider
-//	4. record what happened
+//  1. reserve the effect (PENDING) and COMMIT
+//  2. mark it RUNNING and COMMIT
+//  3. call the provider
+//  4. record what happened
 //
 // A crash after step 1 leaves PENDING, which recovery reads as "nothing was
 // sent, safe to run". A crash after step 3 leaves RUNNING, which recovery
