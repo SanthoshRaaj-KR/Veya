@@ -97,9 +97,10 @@ func (x *Executor) Execute(ctx context.Context, task core.Task) (json.RawMessage
 
 	// The fast path. A pure read that happens twice costs latency, not
 	// correctness, so taxing it with two extra transactions would be paying
-	// for a guarantee it does not need.
+	// for a guarantee it does not need. It gets no key, because it has no
+	// ledger row and nothing to deduplicate.
 	if !descriptor.Class.HasConsequence() {
-		return x.call(ctx, descriptor, task.Payload)
+		return x.call(ctx, descriptor, callFor(task, ""))
 	}
 
 	key := core.NewIdempotencyKey(task.RunID, task.StepID, effectSeq)
@@ -179,7 +180,7 @@ func (x *Executor) perform(ctx context.Context, task core.Task, d core.ToolDescr
 		return nil, err
 	}
 
-	result, callErr := x.call(ctx, d, task.Payload)
+	result, callErr := x.call(ctx, d, callFor(task, effect.Key))
 	if callErr == nil {
 		out := core.EffectOutcome{
 			Response:    result,
@@ -219,14 +220,31 @@ func (x *Executor) perform(ctx context.Context, task core.Task, d core.ToolDescr
 //
 // A panic mid-call proves nothing about whether the request was sent, so it is
 // treated the same as any other unexplained failure: unknown, not failed.
-func (x *Executor) call(ctx context.Context, d core.ToolDescriptor, payload json.RawMessage) (result json.RawMessage, err error) {
+func (x *Executor) call(ctx context.Context, d core.ToolDescriptor, call core.ToolCall) (result json.RawMessage, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = nil
 			err = fmt.Errorf("tool %s panicked: %v", d.Name, r)
 		}
 	}()
-	return d.Handler(ctx, payload)
+	return d.Handler(ctx, call)
+}
+
+// callFor describes one invocation to the tool that is about to run it.
+//
+// The key is the part that matters. A tool declaring IDEMPOTENT_BY_KEY is
+// asserting that its provider deduplicates by key, which it cannot make true
+// without being given the key — so passing it is not a convenience, it is what
+// makes the class mean anything.
+func callFor(task core.Task, key core.IdempotencyKey) core.ToolCall {
+	return core.ToolCall{
+		RunID:   task.RunID,
+		TaskID:  task.ID,
+		StepID:  task.StepID,
+		Key:     key,
+		Payload: task.Payload,
+		Attempt: task.Attempt,
+	}
 }
 
 // transition records an effect's new status and, optionally, an event.

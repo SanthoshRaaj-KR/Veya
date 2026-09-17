@@ -114,7 +114,7 @@ func TestAbandonedEffectIsReconciledNotRerun(t *testing.T) {
 		queries atomic.Int32
 	)
 	h.tools.Effectful("send_money", core.ClassQueryable, time.Hour,
-		func(context.Context, []byte) ([]byte, error) {
+		func(context.Context, core.ToolCall) ([]byte, error) {
 			sends.Add(1)
 			return json.RawMessage(`{"reference":"pay_98374"}`), nil
 		},

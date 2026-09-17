@@ -23,6 +23,8 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 	"github.com/SanthoshRaaj-KR/Veya/internal/dispatch/inproc"
+	"github.com/SanthoshRaaj-KR/Veya/internal/dispatch/jetstream"
+	dispatchpg "github.com/SanthoshRaaj-KR/Veya/internal/dispatch/postgres"
 	"github.com/SanthoshRaaj-KR/Veya/internal/effects"
 	"github.com/SanthoshRaaj-KR/Veya/internal/engine"
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
@@ -40,6 +42,36 @@ const (
 	StorePostgres = "postgres"
 )
 
+// Dispatch kinds — how a committed task reaches a worker.
+//
+// All three are at-least-once and none of them is trusted: a delivery says
+// "task T may need attention" and the worker reads what is true from the store.
+// Choosing between them is an operational question, not a correctness one.
+const (
+	// DispatchInproc is a channel. Only workers in this process can hear it.
+	DispatchInproc = "inproc"
+
+	// DispatchPostgres polls the tasks table with SKIP LOCKED. Workers in other
+	// processes, with nothing to install beyond the database.
+	DispatchPostgres = "postgres"
+
+	// DispatchJetStream pushes over NATS. Workers anywhere, without every
+	// worker polling the database.
+	DispatchJetStream = "jetstream"
+)
+
+// Roles — which loops a process runs.
+//
+// The split is about what a process is responsible for, not about capability.
+// A worker process holds a full engine, because completing a task advances the
+// run and advancing needs a decider; what it does not do is sweep for stranded
+// work, reclaim leases, or reconcile effects. Those are single-purpose loops
+// that every extra copy of merely duplicates.
+const (
+	RoleRuntime = "runtime" // engine loops, relay, reaper, reconciler, workers
+	RoleWorker  = "worker"  // workers only
+)
+
 // DefaultDSN points at the container docker-compose.yml starts. Port 5433, not
 // 5432, so Veya does not collide with a PostgreSQL already installed on the
 // host — a collision there fails confusingly rather than loudly.
@@ -47,8 +79,11 @@ const DefaultDSN = "postgres://veya:veya@localhost:5433/veya?sslmode=disable"
 
 // Config is everything needed to build a runtime.
 type Config struct {
+	Role         string        // runtime | worker
 	Store        string        // memory | postgres
 	DSN          string        // required when Store is postgres
+	Dispatch     string        // inproc | postgres | jetstream
+	NATSURL      string        // required when Dispatch is jetstream
 	Workers      int           // in-process workers to run
 	ScanInterval time.Duration // recovery loop period
 	LeaseTTL     time.Duration // how long a claim lasts without a heartbeat
@@ -68,8 +103,11 @@ type Config struct {
 // DefaultConfig returns the configuration the binaries start from.
 func DefaultConfig() Config {
 	return Config{
+		Role:          RoleRuntime,
 		Store:         StorePostgres,
 		DSN:           DefaultDSN,
+		Dispatch:      DispatchInproc,
+		NATSURL:       jetstream.DefaultURL,
 		Workers:       1,
 		ScanInterval:  2 * time.Second,
 		LeaseTTL:      engine.DefaultLeaseTTL,
@@ -86,6 +124,14 @@ func DefaultConfig() Config {
 // Unknown values fail loudly here rather than being silently ignored, so a
 // typo in a flag is a startup error instead of a runtime surprise.
 func (c *Config) Validate() error {
+	switch c.Role {
+	case "":
+		c.Role = RoleRuntime
+	case RoleRuntime, RoleWorker:
+	default:
+		return fmt.Errorf("wiring: unknown role %q (want runtime or worker)", c.Role)
+	}
+
 	switch c.Store {
 	case StoreMemory:
 	case StorePostgres:
@@ -96,6 +142,34 @@ func (c *Config) Validate() error {
 		return errors.New("wiring: --store is required (memory or postgres)")
 	default:
 		return fmt.Errorf("wiring: unknown store %q (want memory or postgres)", c.Store)
+	}
+
+	switch c.Dispatch {
+	case "":
+		c.Dispatch = DispatchInproc
+	case DispatchInproc:
+	case DispatchPostgres:
+		if c.Store != StorePostgres {
+			return errors.New("wiring: --dispatch=postgres needs --store=postgres; " +
+				"the tasks table is the queue")
+		}
+	case DispatchJetStream:
+		if c.NATSURL == "" {
+			return errors.New("wiring: --nats is required when --dispatch=jetstream")
+		}
+	default:
+		return fmt.Errorf("wiring: unknown dispatch %q (want inproc, postgres or jetstream)", c.Dispatch)
+	}
+
+	// An in-process channel cannot reach another process. Failing here turns a
+	// worker that silently never receives anything into a startup error.
+	if c.Role == RoleWorker && c.Dispatch == DispatchInproc {
+		return errors.New("wiring: a worker process needs --dispatch=postgres or " +
+			"--dispatch=jetstream; an in-process channel has no other end")
+	}
+	if c.Role == RoleWorker && c.Store == StoreMemory {
+		return errors.New("wiring: a worker process needs --store=postgres; " +
+			"an in-memory store is not shared with the runtime")
 	}
 
 	if c.Workers < 1 {
@@ -152,8 +226,45 @@ func OpenStore(ctx context.Context, cfg Config, clk core.Clock) (core.Store, err
 	}
 }
 
+// OpenDispatcher builds the configured dispatcher.
+//
+// This function is the whole of Layer 3's claim about the port. Three
+// transports that share no mechanism — a channel, a table, a broker — and
+// everything above this line is written against one interface and cannot tell
+// which it got.
+func OpenDispatcher(ctx context.Context, cfg Config, store core.Store, clk core.Clock, log *slog.Logger) (core.Dispatcher, error) {
+	switch cfg.Dispatch {
+	case DispatchInproc:
+		// Buffered generously: a full channel blocks the relay, and stalling
+		// the relay for want of a slot would delay every task behind it.
+		return inproc.New(1024), nil
+
+	case DispatchPostgres:
+		pg, ok := store.(*postgres.Store)
+		if !ok {
+			return nil, errors.New("wiring: --dispatch=postgres needs the PostgreSQL store")
+		}
+		return dispatchpg.New(dispatchpg.Config{
+			DB:         pg.DB(),
+			Clock:      clk,
+			Visibility: cfg.LeaseTTL,
+			Logger:     log,
+		})
+
+	case DispatchJetStream:
+		return jetstream.Open(ctx, jetstream.Config{
+			URL:    cfg.NATSURL,
+			Logger: log,
+		})
+
+	default:
+		return nil, fmt.Errorf("wiring: unknown dispatch %q", cfg.Dispatch)
+	}
+}
+
 // Stack is an assembled runtime.
 type Stack struct {
+	Role       string
 	Store      core.Store
 	Dispatcher core.Dispatcher
 	Engine     *engine.Engine
@@ -199,9 +310,11 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		return nil, fmt.Errorf("wiring: open store: %w", err)
 	}
 
-	// Buffered generously: a full channel blocks the relay, and stalling the
-	// relay for want of a slot would delay every committed task behind it.
-	dispatcher := inproc.New(1024)
+	dispatcher, err := OpenDispatcher(ctx, cfg, store, clk, log)
+	if err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("wiring: open dispatcher: %w", err)
+	}
 
 	// The relay is built before the engine because the engine holds its Wake.
 	relay, err := outbox.New(outbox.Config{
@@ -288,6 +401,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 	}
 
 	return &Stack{
+		Role:       cfg.Role,
 		Store:      store,
 		Dispatcher: dispatcher,
 		Engine:     eng,
@@ -302,7 +416,13 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 	}, nil
 }
 
-// Serve runs the workers and the recovery loop until ctx is cancelled.
+// Serve runs the loops this process is responsible for until ctx is cancelled.
+//
+// A worker process runs workers and nothing else. It still holds a full engine
+// — completing a task advances the run, and advancing needs a decider — but the
+// sweeps belong to the runtime process. Running a second reaper would not be
+// unsafe, since the reaper obeys the same fencing rules as everyone else; it
+// would simply be two processes doing one process's work.
 func (s *Stack) Serve(ctx context.Context) {
 	var wg sync.WaitGroup
 
@@ -316,32 +436,34 @@ func (s *Stack) Serve(ctx context.Context) {
 		}(w)
 	}
 
-	// The relay before the recovery loop: a restart should publish what the
-	// process that died already committed before it starts looking for what
-	// else might be stuck.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = s.Relay.Run(ctx)
-	}()
+	if s.Role == RoleRuntime {
+		// The relay before the recovery loop: a restart should publish what the
+		// process that died already committed before it starts looking for what
+		// else might be stuck.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.Relay.Run(ctx)
+		}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = s.Runtime.Run(ctx)
-	}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.Runtime.Run(ctx)
+		}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = s.Reaper.Run(ctx)
-	}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.Reaper.Run(ctx)
+		}()
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_ = s.Reconciler.Run(ctx)
-	}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.Reconciler.Run(ctx)
+		}()
+	}
 
 	<-ctx.Done()
 	// Closing the dispatcher unblocks workers parked in Claim, so shutdown

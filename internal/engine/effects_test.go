@@ -33,7 +33,7 @@ func TestSideEffectHappensOnceUnderDuplicateDelivery(t *testing.T) {
 	var calls atomic.Int32
 	release := make(chan struct{})
 	h.tools.Effectful("send_email", core.ClassIdempotentByKey, 0,
-		func(ctx context.Context, _ []byte) ([]byte, error) {
+		func(ctx context.Context, _ core.ToolCall) ([]byte, error) {
 			calls.Add(1)
 			select {
 			case <-release: // hold the provider call open so redeliveries land mid-flight
@@ -115,7 +115,7 @@ func TestAmbiguousFailureIsUnknownThenResent(t *testing.T) {
 
 	var calls atomic.Int32
 	h.tools.Effectful("charge", core.ClassIdempotentByKey, 0,
-		func(context.Context, []byte) ([]byte, error) {
+		func(context.Context, core.ToolCall) ([]byte, error) {
 			if calls.Add(1) == 1 {
 				// The shape of a lost response: no information either way.
 				return nil, errors.New("read tcp: connection reset by peer")
@@ -162,7 +162,7 @@ func TestNotExecutedIsADefiniteFailure(t *testing.T) {
 
 	var calls atomic.Int32
 	h.tools.Effectful("charge", core.ClassIdempotentByKey, 0,
-		func(context.Context, []byte) ([]byte, error) {
+		func(context.Context, core.ToolCall) ([]byte, error) {
 			if calls.Add(1) == 1 {
 				return nil, core.NotExecuted(errors.New("amount is missing"))
 			}
@@ -213,7 +213,7 @@ func TestQueryableEffectIsResolvedByAsking(t *testing.T) {
 	})
 
 	h.tools.Effectful("send_invoice", core.ClassQueryable, 0,
-		func(context.Context, []byte) ([]byte, error) {
+		func(context.Context, core.ToolCall) ([]byte, error) {
 			calls.Add(1)
 			return nil, errors.New("timeout waiting for response")
 		}, reconciler)
@@ -259,7 +259,7 @@ func TestUnreconcilableEffectEscalates(t *testing.T) {
 
 	var calls atomic.Int32
 	h.tools.Effectful("fire_and_forget", core.ClassUnreconcilable, 0,
-		func(context.Context, []byte) ([]byte, error) {
+		func(context.Context, core.ToolCall) ([]byte, error) {
 			calls.Add(1)
 			return nil, errors.New("no response")
 		}, nil)
@@ -317,7 +317,7 @@ func TestExpiredProviderKeyEscalates(t *testing.T) {
 	// wall time — a stalled request, a queue backed up — so by the time anyone
 	// reconciles, the key is long forgotten.
 	h.tools.Effectful("charge", core.ClassQueryable, time.Minute,
-		func(context.Context, []byte) ([]byte, error) {
+		func(context.Context, core.ToolCall) ([]byte, error) {
 			h.clock.Advance(time.Hour)
 			return nil, errors.New("timeout")
 		}, reconciler)

@@ -83,7 +83,7 @@ func TestReconcilerNeverPerformsTheAction(t *testing.T) {
 
 	var calls atomic.Int32
 	f.tools.Effectful("charge", core.ClassIdempotentByKey, time.Hour,
-		func(context.Context, []byte) ([]byte, error) {
+		func(context.Context, core.ToolCall) ([]byte, error) {
 			calls.Add(1)
 			return json.RawMessage(`{"reference":"ch_9"}`), nil
 		}, nil) // no reconciler: it can act, but it cannot be asked
@@ -267,6 +267,6 @@ func (f *fixture) effect(t *testing.T, key core.IdempotencyKey) core.Effect {
 	return e
 }
 
-func failingHandler(context.Context, []byte) ([]byte, error) {
+func failingHandler(context.Context, core.ToolCall) ([]byte, error) {
 	return nil, errors.New("this handler must not be called by the background sweep")
 }

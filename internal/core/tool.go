@@ -6,9 +6,42 @@ import (
 	"time"
 )
 
+// ToolCall is everything a tool is told about the call it is making.
+//
+// It is a struct rather than a payload argument because of Key. A tool
+// classified IDEMPOTENT_BY_KEY is asserting that its provider deduplicates by
+// idempotency key — and it cannot make that true unless it is given the key to
+// send. The same goes for QUERYABLE: a reconciler is asked "did the action
+// under this key happen?", which only has an answer if the original call
+// recorded the key with the provider.
+//
+// So the key travels with the call. Without it the two classes that carry the
+// design's central guarantee would be declarations a tool has no way to honour.
+type ToolCall struct {
+	RunID  RunID
+	TaskID TaskID
+	StepID StepID
+
+	// Key is the idempotency key for this call: stable across every retry,
+	// reassignment and replay of this logical step, and the thing to hand the
+	// provider as its Idempotency-Key header or equivalent.
+	//
+	// Empty for a NONE-class tool, which has no ledger row and nothing to
+	// deduplicate.
+	Key IdempotencyKey
+
+	// Payload is opaque JSON. The runtime never interprets it.
+	Payload json.RawMessage
+
+	// Attempt is which try this is, starting at 1. For logging and for a tool
+	// that wants to reason about its own retries; nothing about correctness
+	// depends on it.
+	Attempt int
+}
+
 // ToolHandler executes one tool call. Payload and return value are opaque
 // JSON: the runtime never interprets either.
-type ToolHandler func(ctx context.Context, payload []byte) ([]byte, error)
+type ToolHandler func(ctx context.Context, call ToolCall) ([]byte, error)
 
 // ToolDescriptor is everything the runtime needs to know about a tool.
 //

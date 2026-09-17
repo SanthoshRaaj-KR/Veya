@@ -42,14 +42,15 @@ func demoDecider() *decider.Static {
 func demoTools() *tool.Registry {
 	r := tool.New()
 	mailbox := newFakeMailbox()
+	model := newFakeModel()
 
 	// A pure read. It changes nothing, so running it twice costs latency and
 	// nothing else, and it bypasses the ledger entirely.
-	r.Func("fetch_meeting", func(_ context.Context, payload []byte) ([]byte, error) {
+	r.Func("fetch_meeting", func(_ context.Context, call core.ToolCall) ([]byte, error) {
 		var in struct {
 			MeetingID string `json:"meeting_id"`
 		}
-		if err := json.Unmarshal(payload, &in); err != nil {
+		if err := json.Unmarshal(call.Payload, &in); err != nil {
 			return nil, core.NotExecuted(fmt.Errorf("fetch_meeting: bad payload: %w", err))
 		}
 		return json.Marshal(map[string]any{
@@ -67,11 +68,11 @@ func demoTools() *tool.Registry {
 	// read means every crash mid-completion quietly pays for it again, with no
 	// record that it ever happened.
 	r.Effectful("summarize", core.ClassIdempotentByKey, 24*time.Hour,
-		func(context.Context, []byte) ([]byte, error) {
-			return json.Marshal(map[string]any{
-				"summary":   "Layer 2 ships. Dispatch benchmarks next.",
-				"reference": "cmpl_7731",
-			})
+		func(_ context.Context, call core.ToolCall) ([]byte, error) {
+			// A real model call sends call.Key as its idempotency header. That
+			// is the entire basis of the IDEMPOTENT_BY_KEY claim: without the
+			// key going out with the request, a re-send is a second billing.
+			return model.complete(call.Key)
 		}, nil)
 
 	// The step with a real external consequence, and the one Layer 2 exists
@@ -79,14 +80,14 @@ func demoTools() *tool.Registry {
 	// it already sent a given key, so an ambiguous outcome is settled by
 	// asking rather than by sending a second email.
 	r.Effectful("send_summary", core.ClassQueryable, 24*time.Hour,
-		func(_ context.Context, payload []byte) ([]byte, error) {
+		func(_ context.Context, call core.ToolCall) ([]byte, error) {
 			var in struct {
 				Channel string `json:"channel"`
 			}
-			if err := json.Unmarshal(payload, &in); err != nil {
+			if err := json.Unmarshal(call.Payload, &in); err != nil {
 				return nil, core.NotExecuted(fmt.Errorf("send_summary: bad payload: %w", err))
 			}
-			return mailbox.send(in.Channel)
+			return mailbox.send(call.Key, in.Channel)
 		},
 		core.ReconcilerFunc(func(_ context.Context, e core.Effect) (core.Resolution, error) {
 			return mailbox.lookup(e.Key), nil
@@ -109,12 +110,24 @@ func newFakeMailbox() *fakeMailbox {
 	return &fakeMailbox{sent: make(map[core.IdempotencyKey]string)}
 }
 
-func (m *fakeMailbox) send(channel string) ([]byte, error) {
+func (m *fakeMailbox) send(key core.IdempotencyKey, channel string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Recording under the caller's key is what makes lookup able to answer. A
+	// provider that did not do this could not be QUERYABLE, however it was
+	// declared — which is why the handler has to be given the key at all.
+	if ref, already := m.sent[key]; already {
+		return json.Marshal(map[string]any{
+			"channel":   channel,
+			"delivered": true,
+			"reference": ref,
+		})
+	}
+
 	m.seq++
 	ref := fmt.Sprintf("msg_%s_%d", strings.ToUpper(channel), 98374+m.seq)
+	m.sent[key] = ref
 	return json.Marshal(map[string]any{
 		"channel":   channel,
 		"delivered": true,
@@ -138,4 +151,34 @@ func (m *fakeMailbox) lookup(key core.IdempotencyKey) core.Resolution {
 		ExternalRef: ref,
 		Detail:      "found by idempotency key",
 	}
+}
+
+// fakeModel stands in for a completion provider that honours an idempotency
+// key: asked twice with the same key it returns the first answer rather than
+// generating — and billing for — a second one.
+type fakeModel struct {
+	mu    sync.Mutex
+	calls map[core.IdempotencyKey]string
+	seq   int
+}
+
+func newFakeModel() *fakeModel {
+	return &fakeModel{calls: make(map[core.IdempotencyKey]string)}
+}
+
+func (m *fakeModel) complete(key core.IdempotencyKey) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ref, already := m.calls[key]
+	if !already {
+		m.seq++
+		ref = fmt.Sprintf("cmpl_%d", 7730+m.seq)
+		m.calls[key] = ref
+	}
+	return json.Marshal(map[string]any{
+		"summary":   "Layer 3 ships. Benchmarks next.",
+		"reference": ref,
+		"replayed":  already,
+	})
 }
