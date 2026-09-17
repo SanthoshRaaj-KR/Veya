@@ -22,6 +22,7 @@
 //	effect.go     the effect ledger: statuses, idempotency keys, UNKNOWN
 //	tool.go       ToolDescriptor, effect classes, Reconciler
 //	lease.go      leases, fencing tokens, the recovery decision table
+//	outbox.go     delivery intent: the row that closes the dual write
 //	decision.go   Decider — what an agent does next, independent of how
 //	errors.go     Sentinel errors every adapter translates into
 //	ports.go      Store, Tx, Dispatcher, Clock, IDGen
