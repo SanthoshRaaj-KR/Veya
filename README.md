@@ -1138,7 +1138,9 @@ broker is behind `//go:build integration` and runs via `make test-integration`.
 
 **New to the codebase?** [docs/code-map.md](docs/code-map.md) walks through
 every directory, says which layer it belongs to, and lists what is deliberately
-not built yet and why.
+not built yet and why. [docs/status.md](docs/status.md) is the running status
+file: what is done and verified, what is knowingly left open, and what the next
+phase needs before it starts.
 
 ---
 

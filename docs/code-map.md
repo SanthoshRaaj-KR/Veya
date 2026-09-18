@@ -2,7 +2,8 @@
 
 A file-by-file guide to what exists, what each piece is for, and what is still
 a plan. Read [architecture-primer.md](architecture-primer.md) first if you want
-the ideas; this document is for finding your way around the code.
+the ideas; this document is for finding your way around the code, and
+[status.md](status.md) is for what is verified and what comes next.
 
 Status labels used throughout:
 
