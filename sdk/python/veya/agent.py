@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from veya.determinism import inspect_body
 from veya.errors import Fail, NonDeterminismError, ToolFailed, VeyaError
 from veya.history import History, RecordedStep
 from veya.tools import Tool
@@ -258,6 +259,7 @@ def agent(
     name: str,
     version: str,
     tools: Iterable[Tool] = (),
+    check_determinism: bool = True,
 ) -> Callable[[Callable[..., Any]], Agent]:
     """Declare a function as an agent.
 
@@ -266,6 +268,12 @@ def agent(
     calls could change — a resumed run whose agent version no longer matches is
     refused loudly by the runtime, which is a far better failure than a replay
     that diverges quietly.
+
+    Declaring an agent also inspects its body for references that will not
+    reproduce on replay, and warns about each with the alternative to use. The
+    warning is not an error: see :mod:`veya.determinism` for why. Silence it
+    for one agent with ``check_determinism=False``, having decided that the
+    reference is in a branch that cannot affect a durable call.
     """
 
     def declare(fn: Callable[..., Any]) -> Agent:
@@ -293,6 +301,9 @@ def agent(
                 f"agent {name!r} takes no arguments; its first parameter must be the "
                 f"context, conventionally named ctx"
             )
+
+        if check_determinism:
+            inspect_body(fn, name)
 
         return Agent(fn, name=name, version=version, tools=registry)
 
