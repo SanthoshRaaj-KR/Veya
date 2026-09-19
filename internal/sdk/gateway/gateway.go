@@ -50,7 +50,7 @@ var (
 	//
 	// It is a liveness failure, not a correctness one, and it is transient by
 	// nature: the task stays PENDING and the next worker to connect gets it.
-	ErrNoWorker = errors.New("veya: no worker is registered for this agent")
+	ErrNoWorker = fmt.Errorf("%w: no worker is registered for this agent", core.ErrUnavailable)
 
 	// ErrAgentVersion reports that the registered worker serves a different
 	// version of the agent than the run was pinned to.
@@ -59,7 +59,8 @@ var (
 	// may have different steps, so letting it decide for a v1 run would fork
 	// the run at replay — silently, and only visible later as a duplicate or a
 	// missing step.
-	ErrAgentVersion = errors.New("veya: the run was started under a different agent version")
+	ErrAgentVersion = fmt.Errorf(
+		"%w: the run was started under a different agent version", core.ErrUnavailable)
 )
 
 // Gateway holds the registered worker sessions.

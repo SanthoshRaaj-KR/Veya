@@ -76,4 +76,22 @@ var (
 	// ErrEscalated is returned when an outcome cannot be resolved by any
 	// mechanism and a human has to decide.
 	ErrEscalated = errors.New("veya: effect requires human resolution")
+
+	// ErrUnavailable reports that a decision cannot be made *right now*,
+	// through no fault of the run.
+	//
+	// The distinction it draws is the one that matters to a stuck run. A
+	// decider that cannot decide fails the run, because a run nobody will ever
+	// advance is invisible and invisible stalled work is worse than a recorded
+	// failure. But some reasons a decision cannot be made are about the
+	// deployment rather than the run: no worker has connected yet, or the only
+	// connected worker serves a different version of the agent than this run
+	// was pinned to.
+	//
+	// Failing a run for those would mean a runtime started thirty seconds
+	// before its workers destroyed every run in that window, and a rolling
+	// deploy destroyed every run still in flight. Both are recoverable by
+	// waiting, so a decider that returns this leaves the run RUNNING and the
+	// recovery loop tries again.
+	ErrUnavailable = errors.New("veya: no decision can be made right now")
 )

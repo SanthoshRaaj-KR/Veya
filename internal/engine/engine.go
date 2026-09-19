@@ -191,6 +191,18 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 	}
 
 	decision, err := e.decider.Decide(ctx, run, history)
+	if errors.Is(err, core.ErrUnavailable) {
+		// Not the run's fault, and not permanent: no worker has connected yet,
+		// or the connected one serves a version this run is not pinned to.
+		// Leaving the run RUNNING lets the recovery loop try again once
+		// whatever is missing arrives. Logged at ERROR because a run that
+		// cannot advance is still a problem, just not this run's problem — and
+		// an operator who cannot see it has a silently stalled run, which is
+		// the thing the branch below exists to avoid.
+		e.log.Error("cannot advance this run yet", "run_id", run.ID,
+			"agent", run.AgentName, "version", run.AgentVersion, "reason", err)
+		return fmt.Errorf("advance %s: %w", runID, err)
+	}
 	if err != nil {
 		// A decider that cannot decide fails the run rather than leaving it
 		// stuck: a run nobody will ever advance is invisible, and invisible

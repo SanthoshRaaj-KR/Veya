@@ -3,9 +3,11 @@ package engine_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -61,6 +63,90 @@ func TestRunCompletesEndToEnd(t *testing.T) {
 	// Two decisions dispatched work, one finished the run: three advances.
 	if run.Version != 3 {
 		t.Fatalf("version = %d, want 3 (two dispatches plus the finish)", run.Version)
+	}
+}
+
+// deciderFunc adapts a function to core.Decider, so a test can state a
+// decider's whole behaviour where it is used.
+type deciderFunc func(core.Run, []core.Event) (core.Decision, error)
+
+func (f deciderFunc) Decide(_ context.Context, run core.Run, history []core.Event) (core.Decision, error) {
+	return f(run, history)
+}
+
+// TestADeciderThatCannotDecideFailsTheRun. A run nobody will ever advance is
+// invisible, and invisible stalled work is worse than a recorded failure.
+func TestADeciderThatCannotDecideFailsTheRun(t *testing.T) {
+	h := newHarness(t, deciderFunc(func(core.Run, []core.Event) (core.Decision, error) {
+		return core.Decision{}, errors.New("the agent body raised")
+	}))
+	h.start(t)
+
+	runID, err := h.engine.StartRun(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	run := h.awaitTerminal(t, runID)
+	if run.Status != core.RunFailed {
+		t.Fatalf("status = %s, want FAILED", run.Status)
+	}
+	if !strings.Contains(run.LastError, "the agent body raised") {
+		t.Fatalf("LastError = %q, which does not say what went wrong", run.LastError)
+	}
+}
+
+// TestADeciderThatIsNotReadyLeavesTheRunAlone is the other half, and the more
+// important one.
+//
+// "No worker has connected yet" and "the connected worker serves a different
+// version" are facts about the deployment, not about the run. Failing runs for
+// those would mean a runtime started thirty seconds before its workers
+// destroyed every run in that window, and a rolling deploy destroyed every run
+// still in flight. Both are fixed by waiting, so the run stays RUNNING and the
+// recovery loop tries again.
+func TestADeciderThatIsNotReadyLeavesTheRunAlone(t *testing.T) {
+	var ready atomic.Bool
+
+	h := newHarness(t, deciderFunc(func(_ core.Run, history []core.Event) (core.Decision, error) {
+		if !ready.Load() {
+			return core.Decision{}, fmt.Errorf("%w: no worker yet", core.ErrUnavailable)
+		}
+		if len(history) > 1 {
+			return core.Decision{Kind: core.DecideComplete}, nil
+		}
+		return core.Decision{
+			Kind:     core.DecideCallTool,
+			StepID:   core.Step(1),
+			TaskType: "upper",
+			Payload:  json.RawMessage(`{}`),
+		}, nil
+	}))
+	h.registerEcho("upper")
+	h.start(t)
+
+	// StartRun advances, and advancing cannot proceed. The error surfaces; the
+	// run does not.
+	runID, err := h.engine.StartRun(context.Background(), nil)
+	if !errors.Is(err, core.ErrUnavailable) {
+		t.Fatalf("StartRun err = %v, want ErrUnavailable", err)
+	}
+
+	run, err := h.store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if run.Status != core.RunRunning {
+		t.Fatalf("status = %s, want RUNNING; a deployment gap is not a run outcome", run.Status)
+	}
+
+	// The worker arrives. The recovery loop finds the run and drives it.
+	ready.Store(true)
+	h.runtime.ScanOnce(context.Background())
+
+	if got := h.awaitTerminal(t, runID); got.Status != core.RunCompleted {
+		t.Fatalf("status = %s (%s), want COMPLETED once a decider was available",
+			got.Status, got.LastError)
 	}
 }
 
