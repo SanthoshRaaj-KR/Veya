@@ -15,6 +15,7 @@ from veya.errors import (
     ToolFailed,
     VeyaError,
 )
+from veya.tools import Tool, ToolDeclarationError, tool
 
 __all__ = [
     "Effect",
@@ -25,9 +26,12 @@ __all__ = [
     "ProtocolError",
     "Resolution",
     "ResolutionKind",
+    "Tool",
     "ToolCall",
+    "ToolDeclarationError",
     "ToolFailed",
     "VeyaError",
+    "tool",
 ]
 
 __version__ = "0.4.0"
