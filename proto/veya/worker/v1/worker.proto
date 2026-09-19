@@ -1,0 +1,357 @@
+// The Veya worker protocol: the wire boundary between the Go runtime and a
+// worker written in another language.
+//
+// This is a public contract from its first commit. Field numbers are never
+// reused, fields are never removed, and a breaking change is a new package
+// (veya.worker.v2) rather than an edit here.
+//
+// The reasoning behind the shape is in docs/worker-protocol.md. The short
+// version: the client dials the runtime and opens one bidirectional stream,
+// then the *server* makes requests down it and the client answers. That is
+// backwards from how gRPC usually reads, and it is why a worker needs no
+// inbound port, no DNS name and no certificate.
+//
+// What crosses this boundary is behaviour, never correctness. The claim loop,
+// the lease, the fencing token and the effect ledger's reserve-commit-act
+// ordering all stay on the Go side. A worker is handed a tool call that
+// already has a committed ledger row behind it and an idempotency key in hand,
+// and is asked only to perform it.
+
+syntax = "proto3";
+
+package veya.worker.v1;
+
+option go_package = "github.com/SanthoshRaaj-KR/Veya/internal/sdk/workerpb;workerpb";
+
+// Worker is the whole protocol.
+service Worker {
+  // Session is opened by the worker and lives as long as the worker does.
+  //
+  // The stream is the registration. When it drops, every tool it registered
+  // is gone and the runtime knows at once, rather than finding out on the
+  // next call to an address nobody is listening on.
+  rpc Session(stream ClientMessage) returns (stream ServerMessage);
+}
+
+// ProtocolVersion is the contract revision a client speaks. It is sent in
+// Register so that a runtime meeting a client it does not understand says so
+// at connect time instead of misreading a message later.
+enum ProtocolVersion {
+  PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROTOCOL_VERSION_1 = 1;
+}
+
+// --- envelopes ------------------------------------------------------------
+
+// ClientMessage is anything a worker sends. The first one on a stream must be
+// a Register; anything else is a protocol error and closes the stream.
+message ClientMessage {
+  oneof message {
+    Register register = 1;
+    DecideResult decide_result = 2;
+    ExecuteResult execute_result = 3;
+    ReconcileResult reconcile_result = 4;
+  }
+}
+
+// ServerMessage is anything the runtime sends. Requests are concurrent: the
+// runtime does not wait for one result before sending the next request, so a
+// worker must be able to have several in flight.
+message ServerMessage {
+  oneof message {
+    Registered registered = 1;
+    DecideRequest decide = 2;
+    ExecuteRequest execute = 3;
+    ReconcileRequest reconcile = 4;
+  }
+}
+
+// --- registration ---------------------------------------------------------
+
+// Register declares which agent this worker serves and what it can run.
+//
+// It is the only place a tool's effect class is ever stated. The runtime holds
+// no second copy to drift from, which is the answer to "two languages holding
+// the same agent definition" — only one of them holds it.
+message Register {
+  ProtocolVersion protocol_version = 1;
+
+  // Agent name and version. The version is compared against the version
+  // pinned on a run at start: a worker on v2 is refused the chance to decide
+  // for a run pinned to v1, because its body may have different steps and
+  // replay would diverge silently.
+  string agent_name = 2;
+  string agent_version = 3;
+
+  // WorkerId identifies this process. It appears in runtime logs, so a tool
+  // call can be traced back to the process that ran it.
+  string worker_id = 4;
+
+  // Runtime describes the client for operators: "python 3.13.5", "go 1.26".
+  // Nothing branches on it.
+  string runtime = 5;
+
+  repeated ToolDescriptor tools = 6;
+
+  // Decides is false for a worker that hosts tools but has no agent body —
+  // a tool-only process. Such a worker is never sent a DecideRequest.
+  bool decides = 7;
+}
+
+// Registered confirms the session. A runtime that cannot accept the
+// registration closes the stream with a gRPC status instead of sending this,
+// so a client that receives it is fully in service.
+message Registered {
+  string session_id = 1;
+  string runtime_version = 2;
+}
+
+// ToolDescriptor is everything the runtime needs to know about one tool.
+//
+// It mirrors core.ToolDescriptor minus the handler, which is the thing that
+// stays on the client side and is the whole reason the protocol exists.
+message ToolDescriptor {
+  string name = 1;
+  EffectClass effect_class = 2;
+
+  // KeyTtlSeconds is how long the provider actually honours an idempotency
+  // key. Zero means no expiry is claimed, which is only honest for a provider
+  // documenting indefinite retention. Past this window an unresolved effect
+  // escalates rather than reconciling, because "not found" from a provider
+  // that has forgotten the key is not evidence that nothing happened.
+  int64 key_ttl_seconds = 3;
+
+  // Reconcilable reports whether the client registered a reconcile hook.
+  // A QUERYABLE tool without one is rejected at registration: a tool that
+  // cannot be asked what it did is UNRECONCILABLE, whatever it calls itself.
+  bool reconcilable = 4;
+}
+
+// EffectClass declares what can be done about an ambiguous outcome. It mirrors
+// core.EffectClass exactly; the names are spelled out rather than numbered
+// loosely so that a mismatch is a compile error on both sides.
+enum EffectClass {
+  EFFECT_CLASS_UNSPECIFIED = 0;
+  EFFECT_CLASS_NONE = 1;
+  EFFECT_CLASS_IDEMPOTENT_BY_KEY = 2;
+  EFFECT_CLASS_QUERYABLE = 3;
+  EFFECT_CLASS_UNRECONCILABLE = 4;
+}
+
+// --- deciding -------------------------------------------------------------
+
+// DecideRequest asks "what does this run owe next?", with the history that
+// answers it.
+//
+// History is sent whole rather than incrementally. It is the authoritative
+// input to replay, and a client assembling it from deltas would be holding
+// state across requests — which is exactly the thing that forks a run when the
+// client restarts and its state does not.
+message DecideRequest {
+  string call_id = 1;
+  Run run = 2;
+  repeated Event history = 3;
+}
+
+// DecideResult answers one DecideRequest. A failure here fails the run: a
+// decider that cannot decide leaves a run nobody will ever advance, and
+// invisible stalled work is worse than a recorded failure.
+message DecideResult {
+  string call_id = 1;
+  oneof outcome {
+    Decision decision = 2;
+    Failure failure = 3;
+  }
+}
+
+message Decision {
+  DecisionKind kind = 1;
+
+  // Set when kind is CALL_TOOL. StepId is a run-relative logical position
+  // assigned by invocation order, never completion order — it is what the
+  // idempotency key is derived from, so it has to survive retries,
+  // reassignment and replay.
+  string step_id = 2;
+  string tool = 3;
+  bytes payload = 4;
+
+  // Set when kind is COMPLETE.
+  bytes output = 5;
+
+  // Set when kind is FAIL.
+  string error = 6;
+}
+
+enum DecisionKind {
+  DECISION_KIND_UNSPECIFIED = 0;
+  DECISION_KIND_CALL_TOOL = 1;
+  DECISION_KIND_COMPLETE = 2;
+  DECISION_KIND_FAIL = 3;
+}
+
+// Run is the durable state of one agent execution.
+message Run {
+  string run_id = 1;
+  string agent_name = 2;
+  string agent_version = 3;
+  string status = 4;
+  bytes input = 5;
+}
+
+// Event is one immutable fact in a run's history.
+message Event {
+  string run_id = 1;
+  int64 seq = 2;
+  string type = 3;
+  string step_id = 4;
+
+  // Payload is the versioned envelope exactly as stored: {"v":1,"data":{...}}.
+  // It crosses the wire verbatim so that a client reading history sees what
+  // the database holds, byte for byte, and an envelope version the client does
+  // not understand is the client's error to raise rather than something the
+  // runtime silently reshapes.
+  bytes payload = 5;
+
+  int64 created_at_unix_nano = 6;
+}
+
+// --- executing ------------------------------------------------------------
+
+// ExecuteRequest is one tool call. Everything needed to perform it is here;
+// the worker holds no state between calls.
+message ExecuteRequest {
+  string call_id = 1;
+  string tool = 2;
+
+  string run_id = 3;
+  string task_id = 4;
+  string step_id = 5;
+
+  // IdempotencyKey is stable across every retry, reassignment and replay of
+  // this logical step, and is the thing to hand the provider as its
+  // Idempotency-Key header or equivalent.
+  //
+  // Empty for a NONE-class tool, which has no ledger row and nothing to
+  // deduplicate. For every other class it is not a convenience: a tool
+  // declaring IDEMPOTENT_BY_KEY cannot make that claim true without it.
+  string idempotency_key = 6;
+
+  bytes payload = 7;
+
+  // Attempt is which try this is, starting at 1. For logging, and for a tool
+  // that wants to reason about its own retries. Nothing about correctness
+  // depends on it.
+  int32 attempt = 8;
+}
+
+message ExecuteResult {
+  string call_id = 1;
+  oneof outcome {
+    // Result is opaque JSON. The runtime never interprets it, beyond looking
+    // for a conventional reference field to record as the provider's own
+    // identifier.
+    bytes result = 2;
+    Failure failure = 3;
+  }
+}
+
+// --- reconciling ----------------------------------------------------------
+
+// ReconcileRequest asks the provider, through the worker, whether an action
+// under this key actually happened.
+//
+// A reconcile hook must not perform the action. One that executes rather than
+// queries turns the reconciliation of an already-committed effect into the
+// duplicate the ledger exists to prevent.
+message ReconcileRequest {
+  string call_id = 1;
+  string tool = 2;
+  Effect effect = 3;
+}
+
+message ReconcileResult {
+  string call_id = 1;
+  oneof outcome {
+    Resolution resolution = 2;
+    Failure failure = 3;
+  }
+}
+
+message Resolution {
+  ResolutionKind kind = 1;
+  bytes response = 2;
+  string external_ref = 3;
+  string detail = 4;
+}
+
+// ResolutionKind is what a reconciliation attempt established.
+//
+// UNSPECIFIED maps to STILL_UNKNOWN, for the same reason Failure's certainty
+// does: the default has to be the answer that is never wrong.
+enum ResolutionKind {
+  RESOLUTION_KIND_UNSPECIFIED = 0;
+  RESOLUTION_KIND_COMMITTED = 1;
+  RESOLUTION_KIND_NOT_EXECUTED = 2;
+  RESOLUTION_KIND_STILL_UNKNOWN = 3;
+}
+
+// Effect is a ledger row, as the reconcile hook needs to see it.
+message Effect {
+  string effect_id = 1;
+  string run_id = 2;
+  string task_id = 3;
+  string effect_type = 4;
+  EffectClass effect_class = 5;
+  string idempotency_key = 6;
+  string status = 7;
+  string external_ref = 8;
+  bytes request = 9;
+  bytes response = 10;
+  int64 created_at_unix_nano = 11;
+}
+
+// --- failure --------------------------------------------------------------
+
+// Failure is how a worker reports that something went wrong, and it carries
+// the single most important bit in this protocol.
+message Failure {
+  // Message is what went wrong, in words.
+  string message = 1;
+
+  // Type is the client-side error class, e.g. a Python exception name. For
+  // operators reading logs; nothing branches on it.
+  string type = 2;
+
+  Certainty certainty = 3;
+}
+
+// Certainty is what a failure proves about whether the action happened.
+//
+// This enum is the reason Failure is a message rather than a string, and the
+// zero value is the point. An error returned after a request may have been
+// transmitted is not evidence that it was not transmitted: the response could
+// have been lost, the connection could have dropped after the provider
+// committed, the deadline could have passed while the work succeeded.
+//
+// So UNSPECIFIED means UNKNOWN. A client that forgets to set this field, or an
+// older client that does not know the field exists, gets the pessimistic
+// answer — a reconcile for what may have been a mere validation error. The
+// other default would be convenient and would occasionally send a second
+// refund, and there is no mechanism anywhere else in the system that would
+// catch it.
+enum Certainty {
+  // Unset. Treated as UNKNOWN.
+  CERTAINTY_UNSPECIFIED = 0;
+
+  // The action provably did not happen: the request was never transmitted.
+  //
+  // This is a claim, not a hint. It moves the effect to FAILED, which permits
+  // a clean retry, so a worker that reports an ambiguous error this way has
+  // defeated the protection the ledger provides. Use it only where the
+  // failure is provably local — a payload that would not serialize, a missing
+  // argument, a connection refused before anything was sent.
+  CERTAINTY_NOT_EXECUTED = 1;
+
+  // It may have happened. Say so; guessing is not an improvement.
+  CERTAINTY_UNKNOWN = 2;
+}
