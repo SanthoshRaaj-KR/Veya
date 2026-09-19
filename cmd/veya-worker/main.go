@@ -34,7 +34,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/SanthoshRaaj-KR/Veya/internal/agents/meeting"
+	"github.com/SanthoshRaaj-KR/Veya/internal/agents"
 	"github.com/SanthoshRaaj-KR/Veya/internal/wiring"
 )
 
@@ -62,10 +62,19 @@ func run() error {
 	fs.DurationVar(&cfg.LeaseTTL, "lease-ttl", cfg.LeaseTTL, "how long a claim lasts without a heartbeat")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "debug, info, warn or error")
 	name := fs.String("name", hostname(), "worker name prefix, for identifying this process in leases and logs")
+	fs.StringVar(&cfg.GatewayAddr, "grpc", cfg.GatewayAddr,
+		"serve the worker protocol on this address, so tool hosts can attach to this process")
+	agentName := fs.String("agent", agents.Default, "the agent this process executes tools for")
+	agentVersion := fs.String("agent-version", "", "the agent version, for an agent defined over the protocol")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
 	cfg.WorkerPrefix = *name
+
+	agent, err := agents.Select(*agentName, *agentVersion, cfg.GatewayAddr)
+	if err != nil {
+		return err
+	}
 
 	// Cancelled on SIGINT/SIGTERM. A worker killed mid-task loses nothing: its
 	// lease lapses, the reaper reclaims the task, and the effect ledger holds
@@ -73,20 +82,15 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	stack, err := wiring.Build(ctx, cfg, wiring.Agent{
-		Name:    meeting.Name,
-		Version: meeting.Version,
-		Decider: meeting.NewDecider(),
-		Tools:   meeting.NewTools(),
-	})
+	stack, err := wiring.Build(ctx, cfg, agent)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stack.Close() }()
 
 	stack.Logger.Info("veya-worker starting",
-		"agent", stack.Engine.Agent(), "dispatch", cfg.Dispatch,
-		"workers", cfg.Workers, "tools", stack.Tools.Names())
+		"agent", stack.Engine.Agent(), "version", agent.Version, "dispatch", cfg.Dispatch,
+		"workers", cfg.Workers, "tools", stack.Tools.Names(), "grpc", cfg.GatewayAddr)
 
 	stack.Serve(ctx)
 	return nil

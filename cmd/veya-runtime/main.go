@@ -13,6 +13,7 @@
 //	veya-runtime --workers 0                # engine only; veya-worker executes
 //	veya-runtime --demo                     # one demo run, wait for it, exit
 //	veya-runtime --store memory --demo      # same, no database needed
+//	veya-runtime --grpc 127.0.0.1:50551 //	  --agent refund_agent --agent-version v1   # serve an agent defined in Python
 package main
 
 import (
@@ -25,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SanthoshRaaj-KR/Veya/internal/agents/meeting"
+	"github.com/SanthoshRaaj-KR/Veya/internal/agents"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 	"github.com/SanthoshRaaj-KR/Veya/internal/wiring"
 )
@@ -50,11 +51,22 @@ func run() error {
 	fs.DurationVar(&cfg.ScanInterval, "scan-interval", cfg.ScanInterval, "recovery scan period")
 	fs.DurationVar(&cfg.RelayInterval, "relay-interval", cfg.RelayInterval, "outbox relay backstop period")
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "debug, info, warn or error")
+	fs.StringVar(&cfg.GatewayAddr, "grpc", cfg.GatewayAddr,
+		"serve the worker protocol on this address; empty leaves the port closed")
+	agentName := fs.String("agent", agents.Default,
+		"the agent this runtime serves; a name that is not built in is expected from a worker")
+	agentVersion := fs.String("agent-version", "",
+		"the agent version pinned on new runs; required for an agent defined over the protocol")
 	fs.BoolVar(&demo, "demo", false, "start one demo run, wait for it to finish, then exit")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
 	cfg.Role = wiring.RoleRuntime
+
+	agent, err := agents.Select(*agentName, *agentVersion, cfg.GatewayAddr)
+	if err != nil {
+		return err
+	}
 
 	// Cancelled on SIGINT/SIGTERM so shutdown is orderly: workers finish what
 	// they hold, and anything still PENDING is recovered by the next process
@@ -62,20 +74,16 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	stack, err := wiring.Build(ctx, cfg, wiring.Agent{
-		Name:    meeting.Name,
-		Version: meeting.Version,
-		Decider: meeting.NewDecider(),
-		Tools:   meeting.NewTools(),
-	})
+	stack, err := wiring.Build(ctx, cfg, agent)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = stack.Close() }()
 
 	stack.Logger.Info("veya-runtime starting",
-		"agent", stack.Engine.Agent(), "store", cfg.Store, "dispatch", cfg.Dispatch,
-		"workers", cfg.Workers, "tools", stack.Tools.Names())
+		"agent", stack.Engine.Agent(), "version", agent.Version,
+		"store", cfg.Store, "dispatch", cfg.Dispatch,
+		"workers", cfg.Workers, "tools", stack.Tools.Names(), "grpc", cfg.GatewayAddr)
 
 	if demo {
 		return runDemo(ctx, stack)
