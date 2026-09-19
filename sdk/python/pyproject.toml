@@ -86,6 +86,28 @@ module = ["veya.worker.*"]
 ignore_errors = true
 follow_imports = "skip"
 
+# veya.session is the one module that calls into the generated stubs, so it is
+# the one module that has to tolerate their typing. Everything else in the
+# package stays strict.
+[[tool.mypy.overrides]]
+module = ["veya.session"]
+disallow_untyped_calls = false
+
+# Tests are strict about behaviour, not about annotations. Requiring a return
+# type on every test function buys nothing and makes each test longer than the
+# thing it checks.
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+# ctx.call returns Any by nature — a tool's result is opaque JSON — so a test
+# body that returns it directly is not hiding anything.
+warn_return_any = false
+check_untyped_defs = true
+
 [[tool.mypy.overrides]]
 module = ["grpc", "grpc.*"]
 ignore_missing_imports = true

@@ -135,13 +135,16 @@ class Worker:
             except grpc.RpcError as rpc_error:
                 if self._stopping.is_set():
                     return
-                code = rpc_error.code()  # type: ignore[attr-defined]
+                # RpcError is also a Call on every path that raises it, but
+                # the stubs do not say so.
+                failed: Any = rpc_error
+                code = failed.code()
                 if code is grpc.StatusCode.INVALID_ARGUMENT:
                     # The runtime refused the registration. Retrying cannot fix
                     # a declaration it rejected, and a loop that retries it
                     # forever buries the one message that says what is wrong.
                     raise VeyaError(
-                        f"the runtime refused this worker: {rpc_error.details()}"  # type: ignore[attr-defined]
+                        f"the runtime refused this worker: {failed.details()}"
                     ) from rpc_error
                 log.warning("veya: disconnected (%s); reconnecting in %.1fs", code, backoff)
 
@@ -167,7 +170,7 @@ class Worker:
             ("grpc.keepalive_permit_without_calls", 1),
         ]
         with grpc.insecure_channel(self.address, options=options) as channel:
-            stub = rpc.WorkerStub(channel)
+            stub: Any = rpc.WorkerStub(channel)
             self._outbound = queue.Queue()
             self._outbound.put(self._registration())
 

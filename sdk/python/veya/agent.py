@@ -16,7 +16,7 @@ import enum
 import inspect
 import json
 import random as _random
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -119,6 +119,19 @@ class Context:
 
         if recorded.error:
             raise ToolFailed(step_id, name, recorded.error)
+
+        if not recorded.completed:
+            # The step was decided and has not finished: it is mid-retry, or in
+            # flight. There is no result to return, and returning None would
+            # hand the body a value it would then compute with — producing a
+            # different payload at the next step and a divergence that had
+            # nothing to do with the author's code.
+            #
+            # Suspending is safe. Task creation is idempotent per (run, step),
+            # so re-deciding the same step is recorded once and dispatched
+            # once.
+            raise _Suspend(step_id, name, payload)
+
         return recorded.result
 
     # --- replay-safe substitutes for things that would diverge ------------
@@ -324,16 +337,16 @@ def _drive(fn: Callable[..., Any], ctx: Context, kwargs: dict[str, Any]) -> Any:
     replay — so it is reported rather than driven.
     """
     result = fn(ctx, **kwargs)
-    if not inspect.isawaitable(result):
+    if not isinstance(result, Coroutine):
         return result
 
-    coro = result
+    coro: Coroutine[Any, Any, Any] = result
     try:
-        coro.send(None)  # type: ignore[union-attr]
+        coro.send(None)
     except StopIteration as done:
         return done.value
 
-    coro.close()  # type: ignore[union-attr]
+    coro.close()
     raise VeyaError(
         "the agent body awaited something other than ctx.call. Everything an agent "
         "waits on has to be a durable step, or it becomes invisible to history and "

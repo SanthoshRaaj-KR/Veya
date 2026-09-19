@@ -61,11 +61,11 @@ def inspect_body(fn: Callable[..., Any], agent_name: str) -> list[str]:
     them without having to capture warnings.
     """
     names = _names_in(fn)
-    globals_ = getattr(fn, "__globals__", {})
+    bindings = _bindings(fn)
     findings: list[str] = []
 
     for name in sorted(names):
-        bound = globals_.get(name)
+        bound = bindings.get(name)
         if bound is None:
             continue
 
@@ -127,13 +127,40 @@ def _callable_findings(bound: Any, alias: str, names: set[str]) -> list[str]:
     ]
 
 
+def _bindings(fn: Callable[..., Any]) -> dict[str, Any]:
+    """Everything a name in the body could resolve to.
+
+    Module globals, plus the closure. An agent declared inside a factory
+    function has its imports as free variables rather than globals, and looking
+    only at globals would silently pass every such agent — which is exactly the
+    kind of gap that makes a check worse than no check, because it is trusted.
+    """
+    env: dict[str, Any] = dict(getattr(fn, "__globals__", {}))
+
+    code = getattr(fn, "__code__", None)
+    closure = getattr(fn, "__closure__", None)
+    if code is not None and closure:
+        for name, cell in zip(code.co_freevars, closure, strict=False):
+            try:
+                env[name] = cell.cell_contents
+            except ValueError:
+                # An empty cell: the variable is not bound yet, which happens
+                # inside a recursive definition. Nothing to inspect.
+                continue
+
+    return env
+
+
 def _names_in(fn: Callable[..., Any]) -> set[str]:
     """Every global and attribute name the function's code mentions.
 
     Nested code objects are walked too — a comprehension, a lambda, or an inner
     function is still part of the body as far as replay is concerned, and an
-    author who moved ``datetime.now()`` into a helper did not thereby make it
-    deterministic.
+    author who moved ``datetime.now()`` into a comprehension did not thereby
+    make it deterministic.
+
+    Free variables count as names. An agent declared inside a factory function
+    reaches its imports through the closure rather than through globals.
     """
     code = getattr(fn, "__code__", None)
     if code is None:
@@ -150,6 +177,7 @@ def _names_in(fn: Callable[..., Any]) -> set[str]:
         seen.add(id(current))
 
         names.update(current.co_names)
+        names.update(current.co_freevars)
         pending.extend(c for c in current.co_consts if isinstance(c, types.CodeType))
 
     return names
