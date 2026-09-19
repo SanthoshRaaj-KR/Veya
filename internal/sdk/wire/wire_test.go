@@ -1,0 +1,337 @@
+package wire_test
+
+import (
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SanthoshRaaj-KR/Veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/sdk/wire"
+	pb "github.com/SanthoshRaaj-KR/Veya/internal/sdk/workerpb"
+)
+
+// TestUnsetCertaintyIsUnknown is the most important test in this package.
+//
+// A worker that does not set Certainty — because it forgot, or because it was
+// built against a contract revision that did not have the field — must be
+// understood as saying "I do not know whether this happened". The opposite
+// default would let a forgotten field silently authorise a retry of something
+// that already took effect, and there is no mechanism anywhere else in the
+// system that would catch it.
+func TestUnsetCertaintyIsUnknown(t *testing.T) {
+	err := wire.Failure(&pb.Failure{Message: "connection reset"})
+
+	if err == nil {
+		t.Fatal("a reported failure converted to a nil error")
+	}
+	if core.IsNotExecuted(err) {
+		t.Fatal("an unset Certainty was read as NOT_EXECUTED; it must mean UNKNOWN")
+	}
+	if got := core.ClassifyFailure(err); got != core.EffectUnknown {
+		t.Fatalf("classified as %s, want %s", got, core.EffectUnknown)
+	}
+}
+
+// TestCertaintyCarriesTheAssertion covers the other half: a worker that can
+// prove nothing was sent says so, and that assertion survives the wire.
+func TestCertaintyCarriesTheAssertion(t *testing.T) {
+	tests := []struct {
+		name      string
+		certainty pb.Certainty
+		want      core.EffectStatus
+	}{
+		{"unspecified", pb.Certainty_CERTAINTY_UNSPECIFIED, core.EffectUnknown},
+		{"unknown", pb.Certainty_CERTAINTY_UNKNOWN, core.EffectUnknown},
+		{"not executed", pb.Certainty_CERTAINTY_NOT_EXECUTED, core.EffectFailed},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := wire.Failure(&pb.Failure{Message: "boom", Certainty: tc.certainty})
+			if got := core.ClassifyFailure(err); got != tc.want {
+				t.Fatalf("classified as %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFailureRoundTrips checks that a Go worker's error and the runtime's
+// reading of it agree. The Go test worker in the gateway suite depends on
+// this being an exact inverse.
+func TestFailureRoundTrips(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"ambiguous", errors.New("upstream timed out")},
+		{"provably local", core.NotExecuted(errors.New("payload would not serialize"))},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wire.Failure(wire.FailureFrom(tc.err))
+
+			if core.IsNotExecuted(got) != core.IsNotExecuted(tc.err) {
+				t.Fatalf("NotExecuted survived as %v, want %v",
+					core.IsNotExecuted(got), core.IsNotExecuted(tc.err))
+			}
+			if !strings.Contains(got.Error(), tc.err.Error()) {
+				t.Fatalf("message %q lost the original %q", got, tc.err)
+			}
+		})
+	}
+}
+
+// TestFailureWithNoDetailIsAProtocolError. A worker reporting a failure with
+// no failure in it is broken, and saying so beats inventing a cause.
+func TestFailureWithNoDetailIsAProtocolError(t *testing.T) {
+	if err := wire.Failure(nil); !errors.Is(err, wire.ErrProtocol) {
+		t.Fatalf("Failure(nil) = %v, want a protocol error", err)
+	}
+}
+
+// TestUnknownResolutionKindIsStillUnknown. An answer this build cannot name
+// must not be read as either "it happened" or "it did not". STILL_UNKNOWN
+// leads to escalation, which is where an unnameable outcome belongs.
+func TestUnknownResolutionKindIsStillUnknown(t *testing.T) {
+	for _, r := range []*pb.Resolution{
+		nil,
+		{},
+		{Kind: pb.ResolutionKind_RESOLUTION_KIND_UNSPECIFIED},
+		{Kind: pb.ResolutionKind(999)},
+	} {
+		if got := wire.Resolution(r).Kind; got != core.ResolvedUnknown {
+			t.Fatalf("Resolution(%v).Kind = %s, want %s", r, got, core.ResolvedUnknown)
+		}
+	}
+}
+
+func TestResolutionCarriesTheProvidersAnswer(t *testing.T) {
+	got := wire.Resolution(&pb.Resolution{
+		Kind:        pb.ResolutionKind_RESOLUTION_KIND_COMMITTED,
+		Response:    []byte(`{"ok":true}`),
+		ExternalRef: "msg_9001",
+		Detail:      "found by idempotency key",
+	})
+
+	if got.Kind != core.ResolvedCommitted {
+		t.Fatalf("Kind = %s, want %s", got.Kind, core.ResolvedCommitted)
+	}
+	if got.ExternalRef != "msg_9001" {
+		t.Fatalf("ExternalRef = %q, want msg_9001", got.ExternalRef)
+	}
+	if string(got.Response) != `{"ok":true}` {
+		t.Fatalf("Response = %s, want the provider's body verbatim", got.Response)
+	}
+}
+
+// TestQueryableWithoutAReconcilerIsRefused pins the rule at the wire edge.
+// internal/tool panics on this for Go tools; a Python tool must not be able to
+// claim what a Go tool would be panicked for.
+func TestQueryableWithoutAReconcilerIsRefused(t *testing.T) {
+	_, err := wire.ToolDescriptor(&pb.ToolDescriptor{
+		Name:        "send_summary",
+		EffectClass: pb.EffectClass_EFFECT_CLASS_QUERYABLE,
+	})
+	if !errors.Is(err, wire.ErrProtocol) {
+		t.Fatalf("err = %v, want a protocol error", err)
+	}
+	if !strings.Contains(err.Error(), "UNRECONCILABLE") {
+		t.Fatalf("error %q should say what the tool actually is", err)
+	}
+}
+
+// TestUnspecifiedEffectClassIsRefused. Defaulting would be wrong in both
+// directions: NONE bypasses the ledger, UNRECONCILABLE escalates to a human
+// who was never told why.
+func TestUnspecifiedEffectClassIsRefused(t *testing.T) {
+	if _, err := wire.EffectClassFrom(pb.EffectClass_EFFECT_CLASS_UNSPECIFIED); !errors.Is(err, wire.ErrProtocol) {
+		t.Fatalf("err = %v, want a protocol error", err)
+	}
+}
+
+func TestEffectClassRoundTrips(t *testing.T) {
+	for _, class := range []core.EffectClass{
+		core.ClassNone,
+		core.ClassIdempotentByKey,
+		core.ClassQueryable,
+		core.ClassUnreconcilable,
+	} {
+		got, err := wire.EffectClassFrom(wire.EffectClassTo(class))
+		if err != nil {
+			t.Fatalf("%s: %v", class, err)
+		}
+		if got != class {
+			t.Fatalf("%s round-tripped to %s", class, got)
+		}
+	}
+}
+
+func TestToolDescriptorCarriesKeyTTL(t *testing.T) {
+	got, err := wire.ToolDescriptor(&pb.ToolDescriptor{
+		Name:          "create_refund",
+		EffectClass:   pb.EffectClass_EFFECT_CLASS_IDEMPOTENT_BY_KEY,
+		KeyTtlSeconds: int64(24 * time.Hour / time.Second),
+	})
+	if err != nil {
+		t.Fatalf("ToolDescriptor: %v", err)
+	}
+	if got.KeyTTL != 24*time.Hour {
+		t.Fatalf("KeyTTL = %s, want 24h", got.KeyTTL)
+	}
+	if got.Handler != nil {
+		t.Fatal("the wire conversion must not invent a handler; the gateway supplies it")
+	}
+}
+
+func TestDecisionRequiresWhatItsKindNeeds(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *pb.Decision
+		want string
+	}{
+		{"nil", nil, "nil decision"},
+		{"unset kind", &pb.Decision{}, "not one this build knows"},
+		{
+			"call with no tool",
+			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_CALL_TOOL, StepId: "S1"},
+			"names no tool",
+		},
+		{
+			"call with no step",
+			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_CALL_TOOL, Tool: "send"},
+			"no step id",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := wire.Decision(tc.in)
+			if !errors.Is(err, wire.ErrProtocol) {
+				t.Fatalf("err = %v, want a protocol error", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecisionConverts(t *testing.T) {
+	call, err := wire.Decision(&pb.Decision{
+		Kind:    pb.DecisionKind_DECISION_KIND_CALL_TOOL,
+		StepId:  "S2",
+		Tool:    "summarize",
+		Payload: []byte(`{"style":"brief"}`),
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if call.Kind != core.DecideCallTool || call.StepID != core.Step(2) || call.TaskType != "summarize" {
+		t.Fatalf("got %+v", call)
+	}
+
+	done, err := wire.Decision(&pb.Decision{
+		Kind:   pb.DecisionKind_DECISION_KIND_COMPLETE,
+		Output: []byte(`{"sent":true}`),
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if done.Kind != core.DecideComplete || string(done.Output) != `{"sent":true}` {
+		t.Fatalf("got %+v", done)
+	}
+}
+
+// TestFailWithNoReasonStillFails. Refusing a FAIL because it carried no words
+// would leave the run advancing as though nothing had gone wrong.
+func TestFailWithNoReasonStillFails(t *testing.T) {
+	got, err := wire.Decision(&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_FAIL})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if got.Kind != core.DecideFail {
+		t.Fatalf("Kind = %s, want %s", got.Kind, core.DecideFail)
+	}
+	if got.Error == "" {
+		t.Fatal("a failure with no reason must still carry something an operator can read")
+	}
+}
+
+// TestEventPayloadCrossesVerbatim. The envelope is the client's to interpret,
+// including its version field, so this conversion must not touch it.
+func TestEventPayloadCrossesVerbatim(t *testing.T) {
+	ev, err := core.NewEvent("run-1", 3, core.EventTaskCompleted, core.Step(1),
+		core.TaskCompletedData{TaskID: "task-1", Result: json.RawMessage(`{"n":1}`)})
+	if err != nil {
+		t.Fatalf("NewEvent: %v", err)
+	}
+	ev.CreatedAt = time.Unix(1700000000, 0)
+
+	got := wire.Event(ev)
+
+	if string(got.GetPayload()) != string(ev.Payload) {
+		t.Fatalf("payload was reshaped:\n got %s\nwant %s", got.GetPayload(), ev.Payload)
+	}
+	if got.GetSeq() != 3 || got.GetType() != string(core.EventTaskCompleted) || got.GetStepId() != "S1" {
+		t.Fatalf("got %+v", got)
+	}
+	if got.GetCreatedAtUnixNano() != ev.CreatedAt.UnixNano() {
+		t.Fatalf("CreatedAt = %d, want %d", got.GetCreatedAtUnixNano(), ev.CreatedAt.UnixNano())
+	}
+}
+
+// TestZeroTimeIsZeroOnTheWire. time.Time's zero value has a large negative
+// UnixNano, which would read on the other side as a date in 1754 rather than
+// as "unset".
+func TestZeroTimeIsZeroOnTheWire(t *testing.T) {
+	if got := wire.Event(core.Event{}).GetCreatedAtUnixNano(); got != 0 {
+		t.Fatalf("zero time crossed as %d, want 0", got)
+	}
+	if got := wire.Effect(core.Effect{}).GetCreatedAtUnixNano(); got != 0 {
+		t.Fatalf("zero time crossed as %d, want 0", got)
+	}
+}
+
+// TestRunDoesNotCarryItsVersion. The advancement counter is the engine's
+// concurrency control; a client reasoning about it is a client about to
+// serialize advancement a second time, incorrectly.
+func TestRunDoesNotCarryItsVersion(t *testing.T) {
+	got := wire.Run(core.Run{
+		ID:           "run-7",
+		AgentName:    "refund_agent",
+		AgentVersion: "v1",
+		Status:       core.RunRunning,
+		Version:      42,
+		Input:        json.RawMessage(`{"order_id":987}`),
+	})
+
+	if got.GetRunId() != "run-7" || got.GetAgentVersion() != "v1" {
+		t.Fatalf("got %+v", got)
+	}
+	// There is no field to check; the assertion is that the generated struct
+	// has none, which the compiler enforces. This documents why.
+	if string(got.GetInput()) != `{"order_id":987}` {
+		t.Fatalf("Input = %s", got.GetInput())
+	}
+}
+
+func TestExecuteRequestCarriesTheKey(t *testing.T) {
+	got := wire.ExecuteRequest("c-1", "send_summary", core.ToolCall{
+		RunID:   "run-7",
+		TaskID:  "task-9",
+		StepID:  core.Step(3),
+		Key:     core.NewIdempotencyKey("run-7", core.Step(3), 1),
+		Payload: []byte(`{"channel":"email"}`),
+		Attempt: 2,
+	})
+
+	if got.GetIdempotencyKey() != "run-7:S3:E1" {
+		t.Fatalf("IdempotencyKey = %q, want run-7:S3:E1", got.GetIdempotencyKey())
+	}
+	if got.GetAttempt() != 2 || got.GetTool() != "send_summary" || got.GetCallId() != "c-1" {
+		t.Fatalf("got %+v", got)
+	}
+}
