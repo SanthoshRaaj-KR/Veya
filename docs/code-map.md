@@ -25,6 +25,7 @@ If you read four files, read these:
 | `internal/effects/executor.go` | The ordering rule — write intent down, commit, *then* act. This is the project's central claim. |
 | `internal/engine/engine.go` | How a decision becomes durable work. |
 | `internal/wiring/wiring.go` | What the thing is actually made of. The only file that names concrete adapters. |
+| `proto/veya/worker/v1/worker.proto` | The boundary an agent in another language crosses, and why its defaults are pessimistic. |
 
 ---
 
@@ -35,7 +36,7 @@ If you read four files, read these:
 | **1 — Foundation** | runs, tasks, event history | ✅ done | `engine/`, `store/` |
 | **2 — Effect safety** | the ledger, `UNKNOWN`, leases, fencing | ✅ done | `effects/`, `lease/` |
 | **3 — Distribution** | outbox + relay, three transports, worker processes | ✅ done | `outbox/`, `dispatch/`, `cmd/veya-worker` |
-| **4 — Agent execution** | Python SDK, LLM deciders, replay | 🔜 planned | `sdk/python/` |
+| **4 — Agent execution** | worker protocol, Python SDK, replay | ✅ done | `proto/`, `internal/sdk/`, `sdk/python/` |
 | **5 — Execution model** | fan-out, timers, retry policy, cancellation | 🔜 planned | — |
 | **6 — Operability** | compaction, dashboard, metrics | 🔜 planned | `telemetry/` |
 | **7 — Validation** | simulation harness, chaos suite, benchmarks | 🔜 planned | `test/` |
@@ -193,22 +194,78 @@ waits for the next scan instead of an immediate redelivery.
 
 ## 10. `internal/worker` — claim, execute, report ✅
 
-`worker.go`. Deliberately thin, because Layer 4 replaces it with a Python
-process speaking the same protocol. It decides nothing: not what runs next, not
+`worker.go`. Deliberately thin. It decides nothing: not what runs next, not
 whether a failure is retryable, not whether a task is finished with.
+
+Layer 4 did **not** replace it, which was the plan and turned out to be the
+wrong plan. Moving the claim loop into Python would have moved the
+reserve→commit→act ordering with it, into the language with no compiler to
+check it — see `docs/worker-protocol.md` §2.1. What Layer 4 replaced instead is
+the two things above this loop: the decider and the tool registry. A Python
+process supplies behaviour; this loop still supplies correctness.
 
 It abandons the tool the moment a heartbeat is fenced. Continuing would be
 working on someone else's task, and its report would be rejected anyway.
 
 ---
 
-## 11. Supporting packages
+## 11. `internal/sdk` — the worker protocol ✅ *(new in Layer 4)*
+
+The near side of the boundary between the Go runtime and an agent written
+somewhere else. `docs/worker-protocol.md` is the argument; this is the code.
+
+| Path | What |
+|---|---|
+| `workerpb/` | generated from `proto/veya/worker/v1/worker.proto`. Committed, so a Go-only machine needs no protoc; `make proto-check` fails if they drift |
+| `wire/` | protocol ↔ core conversion. One file decides what a message *means* |
+| `gateway/` | serves the protocol, and adapts it to `core.Decider` and `core.ToolRegistry` |
+
+**Read `wire/wire.go` for the defaults.** Three of them are load-bearing and
+each is the pessimistic choice: an unset `Certainty` reads as UNKNOWN so a
+forgotten field cannot authorise a retry of something that already happened; an
+unrecognised `ResolutionKind` reads as STILL_UNKNOWN, which leads to
+escalation; an unspecified `EffectClass` is refused outright, because both
+defaults are wrong in different directions.
+
+**`gateway/` is two adapters and the plumbing between them.** `decider.go` and
+`registry.go` implement interfaces that existed before this package did and did
+not change to accommodate it — which is checkable: delete `internal/sdk` and
+the runtime still builds, still passes its tests, and still runs the Go demo
+agent.
+
+What it deliberately does not do: claim tasks, hold leases, issue fencing
+tokens, or touch the ledger. Those stay where they already are.
+
+---
+
+## 12. `sdk/python` — writing an agent ✅ *(new in Layer 4)*
+
+| File | What |
+|---|---|
+| `effects.py` | `EffectClass`, `Resolution`, `ToolCall`, `Effect` — the vocabulary an author reads constantly |
+| `errors.py` | the exception hierarchy. `NotExecuted` is the one that makes a claim rather than naming a situation |
+| `tools.py` | `@tool`, and the declaration-time refusals that keep an effect class honest |
+| `history.py` | folding the event log into something indexed by step |
+| `agent.py` | `@agent`, `ctx.call`, the replay driver, `NonDeterminismError` |
+| `determinism.py` | the import-time warning. A convenience, not the mechanism |
+| `session.py` | the client half of the protocol: one connection, one stream |
+| `serve.py` | `python -m veya.serve agent.py` |
+
+Its tests need no PostgreSQL, no NATS and no Go binary — they run against a
+fake gateway that is a real gRPC server. That is the boundary doing its job; if
+the suite ever needs a database, the SDK has grown a dependency on runtime
+internals the protocol was supposed to hide.
+
+---
+
+## 13. Supporting packages
 
 | Path | Status | What |
 |---|---|---|
 | `internal/wiring/` | ✅ | the composition root. The only place that names adapters. Read this to find out what Veya is made of |
 | `internal/tool/` | ✅ | task type → descriptor. Panics at startup on a contradictory descriptor, e.g. `QUERYABLE` with no reconciler |
-| `internal/decider/` | ✅ | `Static` — a fixed list of steps. LLM deciders are Layer 4 |
+| `internal/decider/` | ✅ | `Static` — a fixed list of steps. A model-driven decider is a Python body reached through `internal/sdk/gateway`, satisfying the same interface |
+| `internal/agents/` | ✅ | which agent a process serves. Both binaries ask here, so they cannot answer differently |
 | `internal/agents/meeting/` | ✅ | the built-in demo agent. Shared by both binaries so they cannot disagree about a tool's class |
 | `internal/clock/` | ✅ | `System` and `Virtual`. No `time.Now()` above the composition root |
 | `internal/idgen/` | ✅ | `Random` and `Sequential`. No `crypto/rand` above the composition root either |
@@ -216,11 +273,11 @@ working on someone else's task, and its report would be rejected anyway.
 
 ---
 
-## 12. `cmd/` — the binaries
+## 14. `cmd/` — the binaries
 
 | Binary | Status | What it does |
 |---|---|---|
-| `veya-runtime` | ✅ | engine, relay, recovery scan, reaper, reconciler — and workers unless `--workers 0` |
+| `veya-runtime` | ✅ | engine, relay, recovery scan, reaper, reconciler — and workers unless `--workers 0`. Serves the worker protocol with `--grpc` |
 | `veya-worker` | ✅ | executes tasks and nothing else. Start more for capacity |
 | `veya` | ✅ | operator CLI: `migrate`, `run start/show/history`, `effects list/show/resolve`, `outbox` |
 
@@ -241,24 +298,27 @@ veya run start        # terminal 3
 
 ---
 
-## 13. What is deliberately not built yet
+## 15. What is deliberately not built yet
 
 Not omissions — decisions, with reasons.
 
 | Missing | Why | Arrives |
 |---|---|---|
 | Retry backoff, per-tool retry policy | retries are immediate and the policy is a fixed attempt count. A scheduler with nothing to schedule against would be guesswork | Layer 5 |
-| `effect_seq > 1` | a task performs one tool call, so it is always 1. The numbering exists so sub-effects do not invalidate every key already issued | Layer 4 |
+| `effect_seq > 1` | a task performs one tool call, so it is always 1. The numbering exists so sub-effects do not invalidate every key already issued. Layer 4 decided against adding it alongside a second language — one new thing at a time | Layer 5 |
 | Per-task-type lease TTL | an LLM call and a deployment do not deserve the same timeout, but one number is honest until tools differ enough to matter | Layer 5 |
-| Replay of recorded decisions | needs an SDK with a decision log to replay | Layer 4 |
+| A per-step durable clock | `ctx.now()` returns the run's start time. A time that changes between replays goes into a payload and diverges the step after the one that read it; a real one needs durable timers | Layer 5 |
+| `ctx.sleep` / `ctx.wait_for` / cancel / compensate | they are decision kinds `core.Decision` does not have. The protocol gains them when the engine does | Layer 5 |
+| Auth on the worker port | the project's posture is local and plug-and-play, and a half-built auth story is worse than an absent one. It binds loopback | — |
+| A TypeScript SDK | one language proves the boundary is language-neutral. A second Go client proves it more cheaply, and does, in `gateway/client_test.go` | — |
 | Fan-out / fan-in | needs deterministic child step IDs, which needs the SDK's ordering rules | Layer 5 |
 | Outbox retention | published rows accumulate. Trimming belongs with compaction, not scattered | Layer 6 |
 | Per-tool subjects / capability routing | a routing key nothing routes on drifts out of sync with reality unnoticed | Layer 5 |
-| `make test-race` actually run | needs a C toolchain, which this dev machine lacks. The target exists for CI | — |
+| `make test-race` on the dev machine | needs a C toolchain, which this machine lacks. CI runs it on every push, with `-count=2` | ✅ CI |
 
 ---
 
-## 14. Where the interesting tests are
+## 16. Where the interesting tests are
 
 The tests are where the reasoning is checked, so they are worth reading as
 documentation.
@@ -273,8 +333,16 @@ documentation.
 | `engine/reaper_test.go` → `TestReaperFencesThePreviousOwner` | a frozen worker's report is refused after reclaim |
 | `dispatch/postgres/postgres_test.go` → `TestOneTaskGoesToOneWorker` | `SKIP LOCKED` plus the visibility window divides work |
 | `core/effect_test.go` → `TestIdempotencyKeyIsStableAcrossPayloadChanges` | the regression test for the hash-the-request anti-pattern |
+| `sdk/gateway/endtoend_test.go` → `TestAnAmbiguousRemoteEffectIsReconciledNotRepeated` | the exactly-once claim, performed by a worker across a socket |
+| `sdk/gateway/endtoend_test.go` → `TestARunPinnedToAnotherVersionIsRefusedLoudly` | a v2 worker cannot decide for a v1 run, and the run survives the refusal |
+| `sdk/wire/wire_test.go` → `TestUnsetCertaintyIsUnknown` | a forgotten field cannot authorise a retry of something that happened |
+| `sdk/gateway/client_test.go` → `TestAGoWorkerSpeaksTheSameProtocol` | the guard on Python-shaped assumptions creeping into the runtime |
+| `sdk/python/tests/test_replay.py` → `test_a_wall_clock_in_a_payload_diverges` | the determinism failure, caught by history rather than by the warning |
+| `sdk/python/tests/test_determinism.py` → `test_the_guard_does_not_see_through_a_function_call` | the static check's limit, written down so nobody trusts it as a guarantee |
 
 ```bash
 make test              # unit; no Docker, milliseconds
 make test-integration  # the same suites against live PostgreSQL and NATS
+make sdk-test          # the Python SDK: ruff, mypy, pytest
+make demo-python       # the worked example, both halves, end to end
 ```
