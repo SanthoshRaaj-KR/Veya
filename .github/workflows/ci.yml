@@ -116,6 +116,34 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race -count=2 ./...
 
+  # The worked example, actually run. This is Phase 6's headline exit
+  # criterion — "examples/refund_agent.py runs end to end" — and the only
+  # check that exercises the Go runtime and the Python SDK in one process
+  # tree, over a real socket, against the real engine and the real ledger.
+  #
+  # No Docker: the example uses the memory store, because what is under test
+  # is the protocol.
+  example:
+    name: the refund agent, end to end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: install the SDK
+        run: python -m pip install --quiet -e sdk/python
+
+      - name: make demo-python
+        # The script exits with the run's status, so a run that finished
+        # anything other than COMPLETED fails the job.
+        run: bash scripts/demo-python.sh
+
   # The same suite plus everything build-tagged `integration`, against real
   # PostgreSQL and real NATS. Service containers rather than docker compose:
   # the compose file maps PostgreSQL to 5433 to avoid a developer's host
