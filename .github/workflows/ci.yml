@@ -68,6 +68,36 @@ jobs:
         # running.
         run: go vet -tags=integration ./...
 
+  # The Python SDK, on its own. It needs no PostgreSQL, no NATS and no Go
+  # runtime: the suite runs the agent body and the replay driver against a fake
+  # gateway, which is the point of having drawn the boundary where it is.
+  sdk:
+    name: python sdk
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/python
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: install
+        run: python -m pip install --quiet -e ".[dev]"
+
+      - name: ruff
+        run: python -m ruff check . && python -m ruff format --check .
+
+      - name: mypy
+        run: python -m mypy
+
+      - name: pytest
+        run: python -m pytest -q
+
   # The unit suite, with no Docker, under the race detector. -count=2 runs
   # every test twice: a data race that needs two goroutines to interleave does
   # not always show up on the first pass.

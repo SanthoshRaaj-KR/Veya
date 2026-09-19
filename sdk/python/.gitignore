@@ -1,0 +1,4 @@
+# The SDK's own build artefacts. Generated protocol stubs are committed on
+# purpose; see the Makefile's `proto` target.
+dist/
+*.egg-info/
