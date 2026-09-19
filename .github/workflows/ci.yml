@@ -46,6 +46,22 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: generated protocol code is current
+        # The stubs are committed so that a Go-only machine needs no protoc.
+        # The risk that buys is a .proto edited without regenerating, which
+        # would leave the wire contract and the code that implements it
+        # disagreeing. Regenerating here and diffing is what closes it.
+        run: |
+          python -m pip install --quiet grpcio-tools
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          PATH="$(go env GOPATH)/bin:$PATH" python -m grpc_tools.protoc -Iproto             --go_out=. --go_opt=module=github.com/SanthoshRaaj-KR/Veya             --go-grpc_out=. --go-grpc_opt=module=github.com/SanthoshRaaj-KR/Veya             --python_out=sdk/python --pyi_out=sdk/python --grpc_python_out=sdk/python             proto/veya/worker/v1/worker.proto
+          if ! git diff --quiet -- internal/sdk/workerpb sdk/python/veya/worker; then
+            echo "generated protocol code is out of date; run 'make proto' and commit"
+            git --no-pager diff --stat -- internal/sdk/workerpb sdk/python/veya/worker
+            exit 1
+          fi
+
       - name: go vet (integration build tag)
         # Integration tests are build-tagged, so the default vet never compiles
         # them. A test that does not build is a test that silently stops

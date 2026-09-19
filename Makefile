@@ -30,6 +30,37 @@ test-integration: ## Run tests against live PostgreSQL and NATS (needs `make up`
 	VEYA_TEST_DSN="$(VEYA_DSN)" VEYA_TEST_NATS_URL="$(VEYA_NATS)" \
 		$(GO) test -tags=integration -count=1 $(PKG)
 
+# Code generation for the worker protocol.
+#
+# The generated code is committed. That is the decision .planning §12 left
+# open, and the reason is that `go build ./...` and `make test` must work on a
+# machine with no protoc, no protoc-gen-go and no Python — which is every
+# machine that only wants to run the Go runtime. The cost is that a .proto
+# change is two commits' worth of diff; the benefit is that the build has one
+# prerequisite instead of four.
+#
+# `make proto-tools` installs what this needs. grpcio-tools bundles protoc
+# itself, so there is no separate protoc to find.
+PROTO_SRC := proto/veya/worker/v1/worker.proto
+PROTO_PY  := sdk/python
+GOBIN     := $(shell $(GO) env GOPATH)/bin
+
+.PHONY: proto-tools
+proto-tools: ## Install the protobuf code generators
+	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+	$(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+	python -m pip install --quiet grpcio-tools
+
+.PHONY: proto
+proto: ## Regenerate Go and Python stubs from the .proto
+	PATH="$(GOBIN):$$PATH" python -m grpc_tools.protoc -Iproto 		--go_out=. --go_opt=module=github.com/SanthoshRaaj-KR/Veya 		--go-grpc_out=. --go-grpc_opt=module=github.com/SanthoshRaaj-KR/Veya 		--python_out=$(PROTO_PY) --pyi_out=$(PROTO_PY) --grpc_python_out=$(PROTO_PY) 		$(PROTO_SRC)
+	@echo "generated: internal/sdk/workerpb, $(PROTO_PY)/veya/worker/v1"
+
+.PHONY: proto-check
+proto-check: ## Fail if the committed stubs are stale
+	@$(MAKE) --no-print-directory proto
+	@if ! git diff --quiet -- internal/sdk/workerpb $(PROTO_PY)/veya/worker; then 		echo "generated protocol code is out of date; run 'make proto' and commit"; 		git --no-pager diff --stat -- internal/sdk/workerpb $(PROTO_PY)/veya/worker; 		exit 1; 	fi
+
 .PHONY: vet
 vet: ## Run go vet
 	$(GO) vet $(PKG)
