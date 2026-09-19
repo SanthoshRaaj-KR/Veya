@@ -1,0 +1,134 @@
+# Continuous integration for Veya.
+#
+# This file exists mainly for one job: `race`. The race detector needs a C
+# toolchain, the machine this project is developed on does not have one, and
+# Layer 3 added real concurrency — heartbeat goroutines, the outbox relay, the
+# lease reaper, workers in separate processes. An unrun race detector over that
+# is the highest-value check the project was missing, and "run it on a machine
+# that has gcc" is a thing CI is for.
+#
+# Carried from docs/status.md §3, item 1.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GOFLAGS: -mod=mod
+
+jobs:
+  # Formatting and vet run first and alone: they are seconds long, and there is
+  # no sense spinning up PostgreSQL and NATS to discover a missing gofmt.
+  static:
+    name: vet and gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        # The repo stores LF. On the development machine core.autocrlf=true
+        # gives the worktree CRLF and gofmt occasionally objects for that
+        # reason alone; on Linux there is no such excuse, so this is strict.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go vet (integration build tag)
+        # Integration tests are build-tagged, so the default vet never compiles
+        # them. A test that does not build is a test that silently stops
+        # running.
+        run: go vet -tags=integration ./...
+
+  # The unit suite, with no Docker, under the race detector. -count=2 runs
+  # every test twice: a data race that needs two goroutines to interleave does
+  # not always show up on the first pass.
+  race:
+    name: unit tests (race detector)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test -race
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=2 ./...
+
+  # The same suite plus everything build-tagged `integration`, against real
+  # PostgreSQL and real NATS. Service containers rather than docker compose:
+  # the compose file maps PostgreSQL to 5433 to avoid a developer's host
+  # install, and a CI runner has no host install to avoid.
+  integration:
+    name: integration tests (postgres + nats)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: veya
+          POSTGRES_PASSWORD: veya
+          POSTGRES_DB: veya
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U veya -d veya"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+      nats:
+        image: nats:2-alpine
+        ports:
+          - 4222:4222
+          - 8222:8222
+        # A service container cannot override the image's command, so
+        # monitoring is not available here and the healthcheck is the TCP
+        # client port instead. JetStream is enabled by the adapter, which
+        # creates its own stream on connect.
+        options: >-
+          --health-cmd "wget -q -O- http://localhost:8222/healthz || nc -z localhost 4222"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      VEYA_TEST_DSN: postgres://veya:veya@localhost:5433/veya?sslmode=disable
+      VEYA_TEST_NATS_URL: nats://127.0.0.1:4222
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: apply migrations
+        run: go run ./cmd/veya migrate --dsn "$VEYA_TEST_DSN"
+
+      - name: go test -tags=integration
+        # -count=1 defeats the test cache: a suite whose result depends on
+        # external state must not be answered from a previous run's cache.
+        run: go test -tags=integration -count=1 ./...
+
+      - name: the demo, end to end
+        run: go run ./cmd/veya-runtime --dsn "$VEYA_TEST_DSN" --demo
+
+      - name: the demo, over JetStream
+        run: go run ./cmd/veya-runtime --dsn "$VEYA_TEST_DSN" --dispatch jetstream --nats "$VEYA_TEST_NATS_URL" --demo
