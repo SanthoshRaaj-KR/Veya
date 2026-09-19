@@ -64,6 +64,12 @@ var (
 
 // Gateway holds the registered worker sessions.
 type Gateway struct {
+	// Embedded for forward compatibility: a future revision of the contract
+	// that adds an RPC leaves this type still implementing the service, with
+	// the new method returning Unimplemented rather than failing to compile.
+	// That is the right trade for a contract other people's clients speak.
+	pb.UnimplementedWorkerServer
+
 	log *slog.Logger
 
 	mu       sync.RWMutex
