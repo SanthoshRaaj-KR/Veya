@@ -16,6 +16,7 @@ from veya.errors import (
     ToolFailed,
     VeyaError,
 )
+from veya.session import Worker
 from veya.tools import Tool, ToolDeclarationError, tool
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "ToolDeclarationError",
     "ToolFailed",
     "VeyaError",
+    "Worker",
     "agent",
     "tool",
 ]
