@@ -514,23 +514,30 @@ Both completions attempt to advance the run. Both are gated on `runs.version`; o
 
 ## 7. Agent SDK
 
-### 7.1 Python API
+The SDK lives in [`sdk/python`](sdk/python). Your process holds the agent body
+and the tool bodies; the runtime holds the ledger, the leases and the claim
+loop. [docs/worker-protocol.md](docs/worker-protocol.md) explains why the
+boundary is drawn there.
 
-```python
-from veya import Runtime, tool, EffectClass
-
-runtime = Runtime(dsn="postgres://localhost/veya", nats="nats://localhost:4222")
+```bash
+pip install -e sdk/python
 ```
 
-**Defining tools.** A tool declares whether it has external consequences and how it may be reconciled:
+### 7.1 Python API
+
+**Defining tools.** A tool declares whether it has external consequences and
+how an ambiguous outcome may be settled:
 
 ```python
+from veya import EffectClass, tool
+
+
 @tool(effect=EffectClass.NONE)
 def lookup_order(order_id: int) -> dict:
     return payments.get_order(order_id)
 
 
-@tool(effect=EffectClass.IDEMPOTENT_BY_KEY)
+@tool(effect=EffectClass.IDEMPOTENT_BY_KEY, key_ttl_hours=24)
 def create_refund(order_id: int, amount: int, *, idempotency_key: str) -> dict:
     return payments.refund(
         order_id=order_id,
@@ -539,70 +546,123 @@ def create_refund(order_id: int, amount: int, *, idempotency_key: str) -> dict:
     )
 
 
-@tool(effect=EffectClass.QUERYABLE)
+@tool(effect=EffectClass.QUERYABLE, key_ttl_hours=24)
 def send_invoice(customer_id: int, *, idempotency_key: str) -> dict:
     return billing.send(customer_id, ref=idempotency_key)
 
+
 @send_invoice.reconcile
 def _(idempotency_key: str) -> dict | None:
-    """Return the prior result if it exists, else None."""
+    """Return the prior result if it exists, else None. Query; never send."""
     return billing.lookup(ref=idempotency_key)
 ```
 
-`idempotency_key` is injected by the runtime. It is stable across every retry of the same logical step.
+`idempotency_key` is injected by the runtime and is stable across every retry,
+reassignment and replay of the same logical step. A tool declaring
+`IDEMPOTENT_BY_KEY` or `QUERYABLE` whose function cannot receive it is refused
+at import time: the class is an assertion about the provider, and it is false
+unless the key goes out with the request.
 
-**Starting and resuming runs:**
+`key_ttl_hours` is how long the provider actually honours a key. Past that
+window a "not found" means the provider forgot rather than that nothing
+happened, so the runtime escalates instead of believing a reconcile hook that
+says `None`.
 
-```python
-run = runtime.start(agent="refund_agent", input={"order_id": 987})
-
-run.wait()          # block until terminal
-run.status          # RUNNING | COMPLETED | FAILED | CANCELLED
-run.output          # final result
-run.history()       # ordered event history
-run.cancel()        # cooperative cancellation
-```
-
-**Durable primitives** available inside agent code:
+**Defining an agent.** An ordinary function. Every `await ctx.call` is a
+durable step:
 
 ```python
-await run.sleep(hours=24)                  # durable timer, survives restarts
-approval = await run.wait_for("approval")  # durable external signal
-now = run.now()                            # replay-safe clock
-```
+from veya import agent
 
-### 7.2 Example agent
 
-```python
-from veya import agent, EffectClass
-
-@agent(name="refund_agent", tools=[lookup_order, create_refund, send_email])
-async def refund_agent(ctx, input: dict) -> dict:
-    order = await ctx.call(lookup_order, order_id=input["order_id"])
+@agent(name="refund_agent", version="v1",
+       tools=[lookup_order, create_refund, send_invoice])
+async def refund_agent(ctx, order_id: int) -> dict:
+    order = await ctx.call(lookup_order, order_id=order_id)
 
     if order["status"] != "DELIVERED":
         return {"refunded": False, "reason": "order not delivered"}
 
-    if order["amount"] > 10_000:
-        await ctx.wait_for("manager_approval")
-
     refund = await ctx.call(
-        create_refund,
-        order_id=order["id"],
-        amount=order["amount"],
+        create_refund, order_id=order["id"], amount=order["amount"]
     )
-
-    await ctx.call(
-        send_email,
-        to=order["customer_email"],
-        template="refund_confirmation",
-        refund_ref=refund["reference"],
-    )
+    await ctx.call(send_invoice, customer_id=order["customer_id"])
 
     return {"refunded": True, "reference": refund["reference"]}
 ```
 
-Every `ctx.call` is a durable step. If the process dies between the refund and the email, recovery replays the completed steps from history, reconciles the refund's effect state, and resumes at the email — without re-refunding and without re-invoking the model for decisions already made.
+**Running it.** Two processes:
+
+```bash
+veya-runtime --store memory --grpc 127.0.0.1:50551   --agent refund_agent --agent-version v1
+
+python -m veya.serve examples/refund_agent.py
+```
+
+Or `make demo-python`, which starts both, runs one refund, and prints the
+history and the ledger.
+
+### 7.2 How replay works, and the one rule it imposes
+
+The body is never run to completion in one go. It is run repeatedly — once per
+decision — against the history recorded so far, and stopped at the first
+`ctx.call` history has no answer for. That call becomes the next step. Calls
+history *does* have answers for return them without performing anything.
+
+Which means everything before a `ctx.call` runs again on every decision, and
+one rule falls out of it:
+
+> **Issue your durable calls in the same order every time.**
+
+An idempotency key is `run_id:step_id:effect_seq`, and the step number comes
+from invocation order. If a replay reaches the calls in a different order, the
+same logical action gets a different key and the ledger stops protecting it.
+
+In practice: branch on values that came out of a `ctx.call`, not on the wall
+clock or a fresh random number. `ctx.now()` and `ctx.random()` exist so the
+rule has a compliant path — the first returns the run's start time, the second
+is seeded from the run id, and both give the same answer on every replay.
+
+This is checked rather than hoped for. Each call the body produces is compared
+against the `TASK_CREATED` recorded at that position, and a mismatch raises
+`NonDeterminismError` naming the step, what history holds, and what the body
+produced this time:
+
+```
+the agent body diverged at step S2: history records
+create_refund({"amount": 500, "order_id": 987}), but this replay produced
+create_refund({"amount": 500, "at": 1758300142.7})
+```
+
+`@agent` also warns at import about references to `datetime.now`, `random`,
+`uuid` and their neighbours. That is a convenience and not the mechanism: it
+reads one function's code and cannot see through a call to a helper. The check
+that holds is the comparison against history.
+
+**Editing an agent mid-flight.** Bump `version`. A run pins the version it
+started under, and a worker serving a different one is refused the chance to
+decide for it, with both versions named. The run stays `RUNNING` and resumes
+when a matching worker is available — a deploy that rolls v2 in front of
+in-flight v1 runs pauses them rather than destroying them.
+
+**Model calls are effects.** An agent that asks a model what to do next reaches
+it through `ctx.call` on a tool classified `IDEMPOTENT_BY_KEY`, like any other
+consequential call. It is billed and non-deterministic and the provider cannot
+replay it, so treating it as a read means every crash mid-completion quietly
+pays for it again. Reached through `ctx.call`, the model's answer is in
+history, and the branch it drives replays from that answer rather than from a
+fresh one.
+
+### 7.3 What is not here yet
+
+`run.sleep()`, `run.wait_for()`, cancellation and compensation are Layer 5:
+they are decision kinds the engine does not have, and the SDK gains them when
+`core.Decision` does. Until then an agent that needs to wait for a human fails
+deliberately with `Fail(...)`, which is honest, rather than pretending an
+approval was recorded.
+
+There is no authentication on the worker port. That is stated rather than
+half-built, and it is why the gateway binds loopback unless told otherwise.
 
 ---
 
@@ -963,7 +1023,9 @@ Correctness metrics are reported under chaos, not just at steady state. Throughp
 
 Veya runs entirely on one machine. No cloud account, no hosted control plane.
 
-**Requirements:** Go 1.26+, Docker (optional — the memory store needs neither).
+**Requirements:** Go 1.26+. Docker is optional — the memory store needs
+neither it nor a database. Python 3.10+ only if you are writing agents in
+Python.
 
 ```bash
 git clone https://github.com/SanthoshRaaj-KR/Veya.git
@@ -1013,6 +1075,27 @@ A worker holds a full engine — completing a task advances the run, and
 advancing needs a decider. Two processes advancing the same run is safe for the
 same reason two goroutines were: the compare-and-swap on `runs.version` lets one
 win and the losers find the work already done.
+
+**An agent written in Python.** The runtime serves the worker protocol and a
+Python process holds the agent:
+
+```bash
+make sdk-install                             # pip install -e sdk/python[dev]
+make demo-python                             # both halves, one refund, no Docker
+```
+
+Or the two halves by hand:
+
+```bash
+veya-runtime --store memory --grpc 127.0.0.1:50551   --agent refund_agent --agent-version v1    # terminal 1
+python -m veya.serve examples/refund_agent.py  # terminal 2
+veya run start --input '{"order_id": 987}'     # terminal 3
+```
+
+The runtime may be started before the worker. A run with nobody to decide for
+it stays `RUNNING` and is picked up by the recovery scan as soon as a worker
+registers — a deployment gap is not a run's fault. The gateway binds loopback
+because the protocol has no authentication; see §7.3.
 
 **When the runtime refuses to guess:**
 
@@ -1095,7 +1178,7 @@ veya/
 │   ├── lease/           ✅ # the reaper: reclaiming abandoned work
 │   ├── outbox/          ✅ # the relay: committed delivery intent → dispatcher
 │   ├── worker/          ✅ # claim → execute → report
-│   ├── decider/         ✅ # what happens next (static now, LLM in L4)
+│   ├── decider/         ✅ # what happens next (static; a Python body via sdk/)
 │   ├── agents/
 │   │   └── meeting/     ✅ # the built-in demo agent, shared by both binaries
 │   ├── tool/            ✅ # task type → handler registry
@@ -1111,11 +1194,19 @@ veya/
 │   │   ├── postgres/    ✅ # SKIP LOCKED; many processes, no broker
 │   │   ├── jetstream/   ✅ # NATS; workers anywhere
 │   │   └── redis/          # (benchmark comparison, L7)
+│   ├── sdk/
+│   │   ├── workerpb/    ✅ # generated protocol stubs (make proto)
+│   │   ├── wire/        ✅ # protocol ↔ core conversion, and its defaults
+│   │   └── gateway/     ✅ # serves the protocol; a remote Decider + Registry
 │   └── telemetry/          # metrics, tracing, structured logs (L6)
+├── proto/
+│   └── veya/worker/v1/  ✅ # worker.proto — the public wire contract
 ├── sdk/
-│   └── python/             # Runtime, @agent, @tool, ctx primitives (L4)
+│   └── python/          ✅ # @agent, @tool, ctx, replay, the session loop
 ├── examples/
-│   └── refund_agent.py     # (L4)
+│   └── refund_agent.py  ✅ # the README's agent, runnable
+├── scripts/
+│   └── demo-python.sh   ✅ # make demo-python: both halves, one command
 ├── test/
 │   ├── chaos/              # scripted failure scenarios (L7)
 │   ├── simulation/         # deterministic simulation harness (L7)
@@ -1124,11 +1215,14 @@ veya/
 ├── docs/
 │   ├── architecture-primer.md ✅ # plain-English walkthrough of the ideas
 │   ├── code-map.md            ✅ # file-by-file guide: what exists, what does not
+│   ├── status.md              ✅ # what is done, what is open, what is next
+│   ├── worker-protocol.md     ✅ # why the boundary is drawn where it is
 │   ├── architecture.md
 │   ├── data-model.md
 │   └── tool-contract.md
 ├── docker-compose.yml   ✅ # PostgreSQL (:5433) + NATS (:4222)
-├── Makefile             ✅ # build, test, migrate, up/down, demo, runtime/worker
+├── Makefile             ✅ # build, test, proto, migrate, up/down, demos
+├── .github/workflows/   ✅ # vet, race detector, integration, SDK, the example
 └── go.mod               ✅
 ```
 
@@ -1242,18 +1336,48 @@ Not for performance reasons. Kafka is a distributed log without per-message ackn
 > delivery goes to one subject because nothing routes by capability yet
 > (Layer 5).
 
-**Layer 4 — Agent execution**
-- [ ] Python SDK, `@agent` / `@tool`
-- [ ] Dynamic LLM-driven workflows
-- [ ] Replay of recorded decisions
-- [ ] Serialized run advancement
+**Layer 4 — Agent execution** ✅ *complete*
+- [x] Python SDK, `@agent` / `@tool`
+- [x] Dynamic LLM-driven workflows
+- [x] Replay of recorded decisions
+- [x] Serialized run advancement *(landed with Layer 1's run-version CAS)*
+- [x] Agent version pinning *(roadmap lists this under Layer 5; it belongs here)*
+
+> An agent is now a Python function. A worker process dials the runtime over
+> gRPC, registers its agent and its tools, and answers three questions:
+> what happens next, run this tool, did this effect happen. Both answers plug
+> into interfaces that existed before the protocol did — `core.Decider` and
+> `core.ToolRegistry` — so nothing in `core/`, `engine/`, `effects/` or
+> `worker/` changed to accommodate a second language.
+>
+> The ledger stays in Go, deliberately. A protocol where Python drove the
+> reserve→commit→act ordering would give the one load-bearing rule in this
+> design a second implementation, in the language with no compiler to check
+> it. See [docs/worker-protocol.md](docs/worker-protocol.md) §2.1 — including
+> the cost, which is that a slow Python tool occupies a Go worker slot.
+>
+> A model call needs no new machinery either: it *is* an effect, reached
+> through `ctx.call` like anything else, and the branch it drives replays
+> because its result is in history. No `DECISION_RECORDED` event exists,
+> because it would be a weaker second copy of a fact history already holds.
+>
+> Replay is checked, not hoped for. Each call the body produces is compared
+> against the `TASK_CREATED` at that position, and a mismatch raises
+> `NonDeterminismError` naming the step, what history recorded, and what the
+> body produced this time. `@agent` also warns at import about `datetime.now`,
+> `random` and friends — a convenience, not the mechanism, and the SDK's tests
+> say so.
+>
+> Still absent by design: `effect_seq` is still always 1 (Layer 5, with
+> fan-out), `ctx.now()` returns the run's start time rather than a per-step
+> durable clock (Layer 5, with timers), and there is no auth on the worker
+> port, which is why it binds loopback.
 
 **Layer 5 — Execution model completeness**
 - [ ] Fan-out / fan-in with deterministic child step IDs
 - [ ] Durable timers and external signals
 - [ ] Cancellation and compensation hooks
 - [ ] Retry policies, backoff, dead-letter handling
-- [ ] Agent version pinning
 
 **Layer 6 — Operability**
 - [ ] Compaction, snapshots, tiered retention
