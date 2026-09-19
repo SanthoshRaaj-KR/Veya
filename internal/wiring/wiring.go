@@ -33,9 +33,9 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/idgen"
 	"github.com/SanthoshRaaj-KR/Veya/internal/lease"
 	"github.com/SanthoshRaaj-KR/Veya/internal/outbox"
+	"github.com/SanthoshRaaj-KR/Veya/internal/sdk/gateway"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
-	"github.com/SanthoshRaaj-KR/Veya/internal/tool"
 	"github.com/SanthoshRaaj-KR/Veya/internal/worker"
 )
 
@@ -101,6 +101,14 @@ type Config struct {
 	WorkerPrefix string
 
 	LeaseTTL time.Duration // how long a claim lasts without a heartbeat
+
+	// GatewayAddr is where the worker protocol listens. Empty means this
+	// process does not serve it at all, which is the default: a deployment
+	// running only Go agents should not have an open port it never uses.
+	//
+	// The gateway is built before the engine, because an agent defined in
+	// another language gets its decider and its tool registry from it.
+	GatewayAddr string
 
 	// RelayInterval is the outbox relay's backstop period. The engine wakes the
 	// relay on commit, so this only bounds how long work committed by another
@@ -204,6 +212,8 @@ func (c *Config) Validate() error {
 	if c.RelayInterval <= 0 {
 		c.RelayInterval = time.Second
 	}
+	// A worker process may host a gateway too — a Python tool host can attach
+	// to it — but it is off unless asked for, like everywhere else.
 	if c.WorkerPrefix == "" {
 		if host, err := os.Hostname(); err == nil && host != "" {
 			c.WorkerPrefix = host
@@ -296,23 +306,35 @@ type Stack struct {
 	Dispatcher core.Dispatcher
 	Engine     *engine.Engine
 	Runtime    *engine.Runtime
-	Tools      *tool.Registry
+	Tools      core.ToolRegistry
 	Executor   *effects.Executor
 	Relay      *outbox.Relay
 	Reaper     *lease.Reaper
 	Reconciler *effects.Reconciler
 	Workers    []*worker.Worker
-	Logger     *slog.Logger
+
+	// Gateway is nil unless this process serves the worker protocol. It is
+	// the only part of a Stack that other processes connect *to*, rather than
+	// something this process connects to or loops over.
+	Gateway *gateway.Server
+
+	Logger *slog.Logger
 }
 
 // Agent identifies the agent a stack serves. An engine advances only its own
 // agent's runs, so this is what keeps two runtimes sharing a database from
 // driving each other's work through the wrong decider.
+//
+// Decider and Tools are interfaces rather than the concrete Go types, because
+// from Layer 4 an agent may be defined somewhere else entirely: the gateway
+// supplies a decider that replays a Python body and a registry whose tools
+// live in another process. Nothing below this struct can tell the difference,
+// which is the whole of what the worker protocol had to achieve.
 type Agent struct {
 	Name    string
 	Version string
 	Decider core.Decider
-	Tools   *tool.Registry
+	Tools   core.ToolRegistry
 }
 
 // Build assembles a runtime that serves one agent.
@@ -320,14 +342,28 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 	if agent.Name == "" || agent.Version == "" {
 		return nil, errors.New("wiring: agent name and version are required")
 	}
-	if agent.Decider == nil || agent.Tools == nil {
-		return nil, errors.New("wiring: agent decider and tools are required")
-	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	log, err := NewLogger(cfg.LogLevel)
 	if err != nil {
+		return nil, err
+	}
+
+	// The gateway comes first, because an agent defined in another language
+	// gets its decider and its registry from it.
+	var gw *gateway.Server
+	if cfg.GatewayAddr != "" {
+		gw, err = gateway.Listen(cfg.GatewayAddr, gateway.New(log), log)
+		if err != nil {
+			return nil, err
+		}
+	}
+	agent, err = resolveAgent(agent, gw)
+	if err != nil {
+		if gw != nil {
+			gw.Close()
+		}
 		return nil, err
 	}
 
@@ -439,8 +475,41 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		Reaper:     reaper,
 		Reconciler: reconciler,
 		Workers:    workers,
+		Gateway:    gw,
 		Logger:     log,
 	}, nil
+}
+
+// resolveAgent fills in a decider and a registry for an agent that did not
+// bring its own.
+//
+// An agent with neither is one defined over the worker protocol: its body and
+// its tools live in another process, and this process learns what they are
+// when that process connects. An agent with exactly one of the two is a wiring
+// mistake, and guessing which half was meant would produce a runtime that
+// half-works.
+func resolveAgent(agent Agent, gw *gateway.Server) (Agent, error) {
+	switch {
+	case agent.Decider != nil && agent.Tools != nil:
+		return agent, nil
+
+	case agent.Decider != nil || agent.Tools != nil:
+		return Agent{}, fmt.Errorf(
+			"wiring: agent %q brought only half a definition; supply both a decider "+
+				"and a tool registry, or neither and let a worker register them",
+			agent.Name)
+
+	case gw == nil:
+		return Agent{}, fmt.Errorf(
+			"wiring: agent %q has no decider or tools, and --grpc is not set; "+
+				"an agent defined in another language needs the gateway to be listening",
+			agent.Name)
+	}
+
+	g := gw.Gateway()
+	agent.Decider = g.Decider(agent.Name)
+	agent.Tools = g.Registry(agent.Name)
+	return agent, nil
 }
 
 // Serve runs the loops this process is responsible for until ctx is cancelled.
@@ -461,6 +530,20 @@ func (s *Stack) Serve(ctx context.Context) {
 				s.Logger.Error("worker exited", "worker_id", w.ID(), "error", err)
 			}
 		}(w)
+	}
+
+	// Before the loops, so that a worker connecting at the same moment as the
+	// first recovery scan finds somewhere to register. A runtime that swept
+	// for stranded work before it could possibly have a worker would fail
+	// every task it found for want of a tool.
+	if s.Gateway != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.Gateway.Run(ctx); err != nil {
+				s.Logger.Error("worker gateway exited", "error", err)
+			}
+		}()
 	}
 
 	if s.Role == RoleRuntime {
