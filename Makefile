@@ -98,6 +98,20 @@ demo-memory: ## Same demo, in-memory store, no Docker
 demo-jetstream: ## Same demo, delivered over NATS JetStream
 	$(GO) run ./cmd/veya-runtime --dsn "$(VEYA_DSN)" --dispatch jetstream --nats "$(VEYA_NATS)" --demo
 
+.PHONY: demo-python
+demo-python: ## Run the Python refund agent end to end, no Docker
+	@bash scripts/demo-python.sh
+
+.PHONY: sdk-install
+sdk-install: ## Install the Python SDK and its dev dependencies, editable
+	python -m pip install -e "sdk/python[dev]"
+
+.PHONY: sdk-test
+sdk-test: ## Lint, type-check and test the Python SDK
+	cd sdk/python && python -m ruff check . && python -m ruff format --check .
+	cd sdk/python && python -m mypy
+	cd sdk/python && python -m pytest -q
+
 # The two halves of a distributed setup. Run `make runtime` in one terminal and
 # `make worker` in another, then `veya run start` to give them something to do.
 .PHONY: runtime

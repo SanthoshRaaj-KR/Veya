@@ -22,12 +22,22 @@ import (
 // wider is a thing an operator does on purpose, having read that sentence.
 const DefaultAddr = "127.0.0.1:50551"
 
+// DrainTimeout bounds how long shutdown waits for in-flight calls.
+//
+// It has to be bounded, and the reason is specific to this protocol. A worker
+// session is one stream that stays open for the life of the worker, so
+// GracefulStop — which waits for every RPC to finish — waits for every
+// connected worker to disconnect first, which they have no reason to do.
+// Unbounded, a runtime with one idle Python worker attached never exits.
+const DrainTimeout = 5 * time.Second
+
 // Server owns the listener and the gRPC server serving one Gateway.
 type Server struct {
-	gw   *Gateway
-	grpc *grpc.Server
-	ln   net.Listener
-	log  *slog.Logger
+	gw    *Gateway
+	grpc  *grpc.Server
+	ln    net.Listener
+	log   *slog.Logger
+	drain time.Duration
 }
 
 // Listen binds the address and prepares to serve.
@@ -70,7 +80,7 @@ func Listen(addr string, gw *Gateway, log *slog.Logger) (*Server, error) {
 	)
 	pb.RegisterWorkerServer(srv, gw)
 
-	return &Server{gw: gw, grpc: srv, ln: ln, log: log}, nil
+	return &Server{gw: gw, grpc: srv, ln: ln, log: log, drain: DrainTimeout}, nil
 }
 
 // Addr reports the bound address, which is how a test discovers the port when
@@ -80,13 +90,15 @@ func (s *Server) Addr() string { return s.ln.Addr().String() }
 // Gateway returns the gateway being served.
 func (s *Server) Gateway() *Gateway { return s.gw }
 
-// Run serves until ctx is cancelled, then stops gracefully.
+// Run serves until ctx is cancelled, then drains and stops.
 //
-// GracefulStop rather than Stop: an in-flight tool call is an external effect
-// that may be halfway through happening, and killing the stream underneath it
-// turns a clean shutdown into an ambiguous outcome that has to be reconciled.
-// Waiting costs seconds at shutdown and saves an UNKNOWN effect per in-flight
-// call.
+// Graceful first, because an in-flight tool call is an external effect that
+// may be halfway through happening and killing the stream underneath it turns
+// a clean shutdown into an ambiguous outcome someone has to reconcile.
+// Bounded, because a worker session is a stream that stays open for the life
+// of the worker: waiting for every RPC to finish means waiting for every
+// worker to disconnect, which an idle one has no reason to do. Unbounded, a
+// runtime with one Python worker attached simply never exits.
 func (s *Server) Run(ctx context.Context) error {
 	errs := make(chan error, 1)
 	go func() {
@@ -102,10 +114,32 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("gateway: serve: %w", err)
 
 	case <-ctx.Done():
-		s.log.Info("worker gateway stopping", "addr", s.Addr())
-		s.grpc.GracefulStop()
+		s.log.Info("worker gateway stopping", "addr", s.Addr(), "drain", s.drain)
+		s.drainAndStop()
 		<-errs
 		return nil
+	}
+}
+
+// drainAndStop gives in-flight calls a bounded window, then closes everything.
+func (s *Server) drainAndStop() {
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		s.grpc.GracefulStop()
+	}()
+
+	select {
+	case <-drained:
+	case <-time.After(s.drain):
+		// The sessions still open are workers waiting for work, not calls
+		// mid-flight. Closing them costs nothing: a worker that reconnects is
+		// handed the same tasks again, and the ledger is what makes handing
+		// them over twice harmless.
+		s.log.Info("worker gateway drain timed out; closing remaining sessions",
+			"after", s.drain)
+		s.grpc.Stop()
+		<-drained
 	}
 }
 

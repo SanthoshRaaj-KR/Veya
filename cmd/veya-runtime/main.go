@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -58,6 +59,7 @@ func run() error {
 	agentVersion := fs.String("agent-version", "",
 		"the agent version pinned on new runs; required for an agent defined over the protocol")
 	fs.BoolVar(&demo, "demo", false, "start one demo run, wait for it to finish, then exit")
+	demoInput := fs.String("demo-input", `{"meeting_id":"M-1042"}`, "the input for --demo")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -86,7 +88,7 @@ func run() error {
 		"workers", cfg.Workers, "tools", stack.Tools.Names(), "grpc", cfg.GatewayAddr)
 
 	if demo {
-		return runDemo(ctx, stack)
+		return runDemo(ctx, stack, json.RawMessage(*demoInput))
 	}
 
 	stack.Serve(ctx)
@@ -95,7 +97,7 @@ func run() error {
 
 // runDemo starts one run and waits for it, so that `make demo` is a single
 // command that either prints a completed run or fails.
-func runDemo(ctx context.Context, stack *wiring.Stack) error {
+func runDemo(ctx context.Context, stack *wiring.Stack, input json.RawMessage) error {
 	demoCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -106,8 +108,13 @@ func runDemo(ctx context.Context, stack *wiring.Stack) error {
 		stack.Serve(demoCtx)
 	}()
 
-	runID, err := stack.Engine.StartRun(demoCtx, []byte(`{"meeting_id":"M-1042"}`))
-	if err != nil {
+	runID, err := stack.Engine.StartRun(demoCtx, input)
+	if errors.Is(err, core.ErrUnavailable) {
+		// The run is committed; nobody could decide for it yet. With a remote
+		// agent that is the normal opening state — the worker process has not
+		// connected — and the recovery loop drives it as soon as one does.
+		stack.Logger.Info("waiting for a worker to register", "run_id", runID)
+	} else if err != nil {
 		return fmt.Errorf("start demo run: %w", err)
 	}
 
