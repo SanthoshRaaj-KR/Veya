@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -22,7 +21,7 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 	dispatch "github.com/SanthoshRaaj-KR/Veya/internal/dispatch/postgres"
-	"github.com/SanthoshRaaj-KR/Veya/internal/store/migrations"
+	"github.com/SanthoshRaaj-KR/Veya/internal/store/pgtest"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
 )
 
@@ -180,38 +179,7 @@ func newFixture(t *testing.T) *fixture { return newFixtureWith(t, dispatch.Confi
 func newFixtureWith(t *testing.T, cfg dispatch.Config) *fixture {
 	t.Helper()
 
-	dsn := os.Getenv("VEYA_TEST_DSN")
-	if dsn == "" {
-		t.Skip("VEYA_TEST_DSN is not set; run `make up` and use `make test-integration`")
-	}
-
-	ctx := context.Background()
-	admin, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open admin connection: %v", err)
-	}
-	defer func() { _ = admin.Close() }()
-
-	name := fmt.Sprintf("veya_dispatch_%d", time.Now().UnixNano())
-	if _, err := admin.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
-		t.Fatalf("create database: %v", err)
-	}
-	t.Cleanup(func() {
-		a, err := sql.Open("postgres", dsn)
-		if err != nil {
-			return
-		}
-		defer func() { _ = a.Close() }()
-		_, _ = a.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)")
-	})
-
-	db, err := sql.Open("postgres", replaceDB(dsn, name))
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	if _, err := migrations.Apply(ctx, db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	db := pgtest.Scratch(t)
 
 	clk := clock.System{}
 	store := postgres.New(db, clk)
@@ -223,11 +191,8 @@ func newFixtureWith(t *testing.T, cfg dispatch.Config) *fixture {
 	if err != nil {
 		t.Fatalf("dispatch.New: %v", err)
 	}
+	t.Cleanup(func() { _ = d.Close() })
 
-	t.Cleanup(func() {
-		_ = d.Close()
-		_ = db.Close()
-	})
 	return &fixture{db: db, store: store, dispatcher: d}
 }
 
@@ -288,27 +253,4 @@ func (f *fixture) ctx(t *testing.T, d time.Duration) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	t.Cleanup(cancel)
 	return ctx
-}
-
-// replaceDB swaps the database name in a DSN, leaving credentials and options
-// alone.
-func replaceDB(dsn, name string) string {
-	slash := -1
-	for i := len(dsn) - 1; i >= 0; i-- {
-		if dsn[i] == '/' {
-			slash = i
-			break
-		}
-	}
-	if slash < 0 {
-		return dsn
-	}
-	rest := ""
-	for i := slash; i < len(dsn); i++ {
-		if dsn[i] == '?' {
-			rest = dsn[i:]
-			break
-		}
-	}
-	return dsn[:slash+1] + name + rest
 }
