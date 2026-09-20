@@ -37,6 +37,18 @@ const (
 	// EventLeaseExpired records that a task's owner went silent and the task
 	// was reclaimed under a higher fencing token.
 	EventLeaseExpired EventType = "LEASE_EXPIRED"
+
+	// EventTimerSet records that a run parked until a wall-clock instant, and
+	// EventTimerFired that the instant arrived and the run was released.
+	//
+	// Both are needed, and the second is not bookkeeping. The agent body
+	// cannot tell a sleep that is over from one that is still running without
+	// asking a clock, and a clock is the thing it is forbidden to read: an
+	// answer that changes between replays goes into a payload and diverges
+	// the step after the one that read it. TIMER_FIRED is how the passage of
+	// time becomes a fact in history rather than an observation.
+	EventTimerSet   EventType = "TIMER_SET"
+	EventTimerFired EventType = "TIMER_FIRED"
 )
 
 // PayloadVersion is the schema version stamped on every event body written by
@@ -147,6 +159,18 @@ type (
 		TaskID  TaskID `json:"task_id"`
 		Attempt int    `json:"attempt"`
 		Reason  string `json:"reason"`
+	}
+
+	TimerSetData struct {
+		// WakeAt is the instant the run parked until. Recorded rather than
+		// recomputed, so that a replay of this step reads the same instant
+		// the engine actually used — including after a restart, an upgrade,
+		// or a change to whatever the body derived it from.
+		WakeAt time.Time `json:"wake_at"`
+	}
+
+	TimerFiredData struct {
+		WakeAt time.Time `json:"wake_at"`
 	}
 
 	LeaseExpiredData struct {

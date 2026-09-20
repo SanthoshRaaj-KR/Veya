@@ -190,6 +190,20 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 		return fmt.Errorf("advance %s: %w", runID, err)
 	}
 
+	// A parked run is not owed a decision, and must not be asked for one. The
+	// check is here rather than only in the scan's query because Advance is
+	// reachable from the CLI and from a sibling task's completion, and a
+	// sleeping run asked to decide would re-derive the sleep it is already
+	// serving -- harmless, but it would mean a round trip to the agent body on
+	// every poke, for a run whose answer cannot have changed.
+	run, history, ready, err := e.resume(ctx, run, history)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return nil
+	}
+
 	decision, err := e.decider.Decide(ctx, run, history)
 	if errors.Is(err, core.ErrUnavailable) {
 		// Not the run's fault, and not permanent: no worker has connected yet,
@@ -310,6 +324,102 @@ func (e *Engine) finish(ctx context.Context, run core.Run, next core.RunState, e
 	}
 
 	e.log.Info("run finished", "run_id", run.ID, "status", next.Status)
+	return nil
+}
+
+// resume releases a parked run whose wait is over, and reports whether the run
+// is ready to be asked for a decision.
+//
+// It runs before the decider on every advance, and it is what turns the
+// passage of time into a fact. The agent body cannot look at a clock -- an
+// answer that changes between replays diverges the step after the one that
+// read it -- so the engine records that the wait ended, and the body reads
+// that record back like any other history.
+//
+// A run whose wait is still running comes back not ready, and Advance stops
+// without asking anyone anything.
+func (e *Engine) resume(ctx context.Context, run core.Run, history []core.Event) (core.Run, []core.Event, bool, error) {
+	wait, waiting := core.PendingWait(history)
+	if !waiting {
+		return run, history, true, nil
+	}
+
+	now := e.clock.Now()
+	if !wait.Elapsed(now) {
+		e.log.Debug("run is still waiting",
+			"run_id", run.ID, "step_id", wait.StepID, "kind", wait.Kind, "until", wait.Until)
+		return run, history, false, nil
+	}
+
+	err := e.store.RunInTx(ctx, func(ctx context.Context, tx core.Tx) error {
+		// Clearing the park and recording why it ended is one transaction.
+		// Split, a crash between them leaves either a released run whose
+		// history says it is still asleep, or a run marked asleep that
+		// history says woke -- and both are a run that never resumes.
+		if err := tx.AdvanceRun(ctx, run.ID, run.Version, core.RunState{
+			Status:      core.RunRunning,
+			Output:      run.Output,
+			AvailableAt: nil, // released
+		}); err != nil {
+			return err
+		}
+		return core.Append(ctx, tx, run.ID, core.EventTimerFired, wait.StepID,
+			core.TimerFiredData{WakeAt: wait.Until})
+	})
+	if errors.Is(err, core.ErrConflict) {
+		// Another process released it first. Nothing to do, and nothing wrong:
+		// it will be advanced by whoever won.
+		return run, history, false, nil
+	}
+	if err != nil {
+		return run, history, false, fmt.Errorf("resume %s: %w", run.ID, err)
+	}
+
+	e.log.Info("run resumed", "run_id", run.ID, "step_id", wait.StepID, "waited_for", wait.Kind)
+
+	// Re-read both, because the decider is entitled to a history that includes
+	// the wake-up it is about to be asked to replay past.
+	run, err = e.store.GetRun(ctx, run.ID)
+	if err != nil {
+		return run, history, false, fmt.Errorf("resume %s: %w", run.ID, err)
+	}
+	history, err = e.store.History(ctx, run.ID)
+	if err != nil {
+		return run, history, false, fmt.Errorf("resume %s: %w", run.ID, err)
+	}
+	return run, history, true, nil
+}
+
+// park suspends a run until an instant, recording what it is waiting for.
+//
+// The run stays RUNNING. A waiting run is still running, and anything that can
+// happen to a RUNNING run can happen to it -- which is the argument against a
+// WAITING state and the reason this is one column.
+func (e *Engine) park(ctx context.Context, run core.Run, until time.Time,
+	evt core.EventType, step core.StepID, data any) error {
+
+	err := e.store.RunInTx(ctx, func(ctx context.Context, tx core.Tx) error {
+		if err := tx.AdvanceRun(ctx, run.ID, run.Version, core.RunState{
+			Status:      core.RunRunning,
+			Output:      run.Output,
+			AvailableAt: &until,
+		}); err != nil {
+			return err
+		}
+		return core.Append(ctx, tx, run.ID, evt, step, data)
+	})
+	if errors.Is(err, core.ErrConflict) {
+		// Someone else advanced this run. Whatever they did, this decision is
+		// stale; doing nothing is correct, exactly as it is in dispatch.
+		e.log.Debug("park lost the race", "run_id", run.ID, "step_id", step)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("park %s step %s: %w", run.ID, step, err)
+	}
+
+	e.log.Info("run parked", "run_id", run.ID, "step_id", step,
+		"until", until, "indefinite", core.IsIndefinite(until))
 	return nil
 }
 
