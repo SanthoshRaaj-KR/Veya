@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/clock"
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
@@ -235,6 +236,19 @@ func cmdRunShow(args []string) error {
 	fmt.Printf("status    %s\n", r.Status)
 	fmt.Printf("version   %d\n", r.Version)
 	fmt.Printf("created   %s\n", r.CreatedAt.Format("2006-01-02 15:04:05"))
+
+	// A run parked until Tuesday and a run that is wedged both read as
+	// RUNNING with nothing in flight. Without this line the only way to tell
+	// them apart is to read the event log, which is exactly what an operator
+	// is trying to avoid doing at the point they run this command.
+	history, err := store.History(ctx, id)
+	if err != nil {
+		return err
+	}
+	if wait, waiting := core.PendingWait(history); waiting {
+		fmt.Printf("waiting   %s\n", describeWait(wait, clock.System{}.Now()))
+	}
+
 	if r.CompletedAt != nil {
 		fmt.Printf("finished  %s\n", r.CompletedAt.Format("2006-01-02 15:04:05"))
 	}
@@ -261,6 +275,45 @@ func cmdRunShow(args []string) error {
 			t.StepID, t.Type, t.Status, t.Attempt, t.MaxAttempts, t.LastError)
 	}
 	return w.Flush()
+}
+
+// describeWait renders a suspension for a human.
+//
+// Two things it must never do. It must not print core.Indefinite as a date --
+// "waiting until 9999-12-31" tells an operator that something is broken, when
+// what is true is that the run is waiting for a person. And it must not
+// present an overdue wake-up as a problem: a park in the past means ready, and
+// the run is a moment from being picked up by the ordinary scan.
+func describeWait(w core.Wait, now time.Time) string {
+	what := "sleeping"
+	if w.Kind != core.WaitTimer {
+		what = string(w.Kind)
+	}
+
+	switch {
+	case core.IsIndefinite(w.Until):
+		return fmt.Sprintf("%s at step %s, with no scheduled wake-up", what, w.StepID)
+	case w.Elapsed(now):
+		return fmt.Sprintf("%s at step %s until %s (due %s ago; the next scan will pick it up)",
+			what, w.StepID, w.Until.Format("2006-01-02 15:04:05"), roughly(now.Sub(w.Until)))
+	default:
+		return fmt.Sprintf("%s at step %s until %s (in %s)",
+			what, w.StepID, w.Until.Format("2006-01-02 15:04:05"), roughly(w.Until.Sub(now)))
+	}
+}
+
+// roughly renders a duration at the granularity a person reads at. Go's
+// default prints 18h32m14.219482s, and the seconds are noise when the answer
+// is "tomorrow morning".
+func roughly(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return d.Round(time.Second).String()
+	case d < 48*time.Hour:
+		return d.Round(time.Minute).String()
+	default:
+		return fmt.Sprintf("%dd%s", int(d.Hours())/24, (d % (24 * time.Hour)).Round(time.Hour))
+	}
 }
 
 func cmdRunHistory(args []string) error {
