@@ -10,6 +10,10 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
+// zeroTime is an unset deadline: wait until something arrives, however long
+// that takes. It reads better at the call site than time.Time{}.
+var zeroTime time.Time
+
 // waitingAgent parks on a named signal and then completes, reporting what it
 // saw. It is the shape every test in this file drives.
 func waitingAgent(name string, deadline time.Time) deciderFunc {
