@@ -26,9 +26,32 @@ type Run struct {
 	Input        json.RawMessage
 	Output       json.RawMessage
 	LastError    string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	CompletedAt  *time.Time
+
+	// AvailableAt is the instant before which this run must not be advanced.
+	//
+	// Nil means ready, and it has to: every run that predates the column has
+	// nil here and every one of them is ready. A run that is sleeping, or
+	// waiting on a signal, carries the instant it may next be looked at —
+	// Indefinite when there is no schedule at all.
+	//
+	// A run waits on time or on tasks and never both, so this is only ever
+	// set on a run with nothing in flight. See docs/execution-model.md.
+	AvailableAt *time.Time
+
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	CompletedAt *time.Time
+}
+
+// IsWaiting reports whether the run is parked past now.
+//
+// A park whose instant has passed is *ready*, not late. A run whose wake-up
+// went by while the runtime was down has to be picked up by the ordinary scan
+// with no special case at all — anything that treats an overdue timer as an
+// error loses every timer that expired during an outage, which is the exact
+// failure durable timers exist to prevent.
+func (r Run) IsWaiting(now time.Time) bool {
+	return r.AvailableAt != nil && r.AvailableAt.After(now)
 }
 
 // RunState is the mutable slice of a run that advancement writes.
@@ -44,6 +67,12 @@ type RunState struct {
 	Status    RunStatus
 	Output    json.RawMessage
 	LastError string
+
+	// AvailableAt parks the run until an instant. Nil clears any existing
+	// park, which is why it is safe for every caller that is not parking to
+	// leave it unset: a run that advances is, by that fact, no longer
+	// waiting. Only the two suspending decisions set it.
+	AvailableAt *time.Time
 }
 
 // IsTerminal reports whether no further advancement is possible.
