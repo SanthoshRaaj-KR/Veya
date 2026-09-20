@@ -76,13 +76,22 @@ func (t *tx) AdvanceRun(ctx context.Context, id core.RunID, expectedVersion int6
 		completedAt = now
 	}
 
+	// A nil AvailableAt writes NULL, which clears any existing park. That is
+	// the correct default rather than a convenience: a run that advances is,
+	// by that fact, no longer waiting, so only the two suspending decisions
+	// have to remember to set it.
+	var availableAt any
+	if next.AvailableAt != nil {
+		availableAt = next.AvailableAt.UTC()
+	}
+
 	_, err = t.tx.ExecContext(ctx,
 		`UPDATE runs
-		 SET status = $1, output = $2, last_error = $3,
-		     version = version + 1, updated_at = $4, completed_at = $5
-		 WHERE run_id = $6 AND version = $7`,
+		 SET status = $1, output = $2, last_error = $3, available_at = $4,
+		     version = version + 1, updated_at = $5, completed_at = $6
+		 WHERE run_id = $7 AND version = $8`,
 		string(next.Status), jsonOrNull(next.Output), nullIfEmpty(next.LastError),
-		now, completedAt, string(id), expectedVersion)
+		availableAt, now, completedAt, string(id), expectedVersion)
 	return translate(op, err)
 }
 

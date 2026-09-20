@@ -88,7 +88,7 @@ func (s *Store) RunInTx(ctx context.Context, fn func(context.Context, core.Tx) e
 // --- reads ----------------------------------------------------------------
 
 const runColumns = `run_id, agent_name, agent_version, status, version,
-	input, output, last_error, created_at, updated_at, completed_at`
+	input, output, last_error, available_at, created_at, updated_at, completed_at`
 
 const taskColumns = `task_id, run_id, step_id, task_type, payload, status,
 	attempt, max_attempts, last_error, created_at, updated_at, completed_at`
@@ -207,16 +207,21 @@ func scanRun(sc scanner) (core.Run, error) {
 		r             core.Run
 		input, output []byte
 		lastErr       sql.NullString
+		available     sql.NullTime
 		completed     sql.NullTime
 	)
 	err := sc.Scan(&r.ID, &r.AgentName, &r.AgentVersion, &r.Status, &r.Version,
-		&input, &output, &lastErr, &r.CreatedAt, &r.UpdatedAt, &completed)
+		&input, &output, &lastErr, &available, &r.CreatedAt, &r.UpdatedAt, &completed)
 	if err != nil {
 		return core.Run{}, err
 	}
 	r.Input = rawOrNil(input)
 	r.Output = rawOrNil(output)
 	r.LastError = lastErr.String
+	if available.Valid {
+		t := available.Time.UTC()
+		r.AvailableAt = &t
+	}
 	if completed.Valid {
 		t := completed.Time
 		r.CompletedAt = &t

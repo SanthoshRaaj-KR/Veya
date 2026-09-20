@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
@@ -227,6 +228,19 @@ func (s *Store) RunsAwaitingAdvance(_ context.Context, limit int) ([]core.RunID,
 
 func (s *Store) Close() error { return nil }
 
+// copyTime copies a nullable instant so that a caller holding the pointer it
+// passed in cannot reach through and mutate stored state afterwards. The
+// PostgreSQL adapter gets this for free by serializing through the driver;
+// here it has to be written down, and it is exactly the kind of divergence
+// the contract suite exists to keep out.
+func copyTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	return &c
+}
+
 func sortTasks(ts []core.Task) {
 	sort.Slice(ts, func(i, j int) bool {
 		if !ts[i].CreatedAt.Equal(ts[j].CreatedAt) {
@@ -282,6 +296,9 @@ func (t *tx) AdvanceRun(_ context.Context, id core.RunID, expectedVersion int64,
 	r.Status = next.Status
 	r.Output = next.Output
 	r.LastError = next.LastError
+	// Nil clears the park. A run that advances is, by that fact, no longer
+	// waiting, so only the two suspending decisions have to set this.
+	r.AvailableAt = copyTime(next.AvailableAt)
 	r.Version++
 	r.UpdatedAt = now
 	if next.Status.IsTerminal() {
