@@ -12,6 +12,8 @@ import (
 // event recording it, and (from Layer 3) the intent to deliver it are one
 // transaction or they are a dual-write bug.
 type Store interface {
+	SignalStore
+
 	// RunInTx runs fn inside a transaction, committing if it returns nil and
 	// rolling back otherwise. fn may be called more than once if the adapter
 	// retries a serialization failure, so it must not have side effects
@@ -175,6 +177,28 @@ type Tx interface {
 	// is currently in from. Returns ErrConflict if it is not, and
 	// ErrInvalidTransition if the edge is not permitted.
 	TransitionEffect(ctx context.Context, key IdempotencyKey, from, to EffectStatus, out EffectOutcome) error
+
+	// RecordSignal stores one arrival, relying on the unique constraint on
+	// (run_id, signal_id).
+	//
+	// Returns ErrSignalExists when the pair is taken. That is not a failure:
+	// a sender retrying a callback it is unsure landed is the expected case,
+	// and the constraint is what turns the retry into a no-op rather than a
+	// second approval.
+	RecordSignal(ctx context.Context, s Signal) error
+
+	// ReleaseRun clears a run's park without advancing it.
+	//
+	// It is deliberately not AdvanceRun. The sender of a signal is not a
+	// decider and has no business moving the run on; all it is entitled to
+	// say is that the run is worth looking at again. Leaving the version
+	// alone also means it cannot lose a race with whoever is deciding, and
+	// cannot make that decider lose one either.
+	//
+	// It belongs in the same transaction as the signal that justified it.
+	// Split, a crash between them leaves a signal nobody will act on
+	// attached to a run that is still parked.
+	ReleaseRun(ctx context.Context, id RunID) error
 
 	// RegisterWorker records a worker, or updates one already known.
 	//

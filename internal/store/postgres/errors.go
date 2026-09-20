@@ -36,6 +36,7 @@ const (
 	constraintTaskPK    = "tasks_pkey"
 	constraintEffectPK  = "effects_pkey"
 	constraintEffectKey = "effects_idempotency_key_key" // UNIQUE (idempotency_key)
+	constraintSignalPK  = "signals_pkey"                // PRIMARY KEY (run_id, signal_id)
 )
 
 // translate maps a driver error onto a core sentinel, wrapping it with context.
@@ -59,6 +60,11 @@ func translate(op string, err error) error {
 			return fmt.Errorf("%s: %w", op, core.ErrTaskExists)
 		case constraintEventSeq:
 			return fmt.Errorf("%s: %w", op, core.ErrSeqConflict)
+		case constraintSignalPK:
+			// Not a generic conflict. It means this exact delivery is already
+			// recorded, which is what an at-least-once sender retrying its
+			// callback is supposed to hit, and the caller treats it as success.
+			return fmt.Errorf("%s: %w", op, core.ErrSignalExists)
 		case constraintEffectKey:
 			// Distinct from ErrConflict on purpose. This one means "this
 			// logical action already has a record, go and read it", and a

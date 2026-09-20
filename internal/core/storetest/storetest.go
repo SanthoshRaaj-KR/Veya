@@ -109,6 +109,7 @@ func RunStoreSuite(t *testing.T, newStore NewStore) {
 		{"RunsAwaitingAdvanceExcludesInFlight", testAwaitingAdvance},
 	}
 	tests = append(tests, suspensionContracts()...)
+	tests = append(tests, signalContracts()...)
 	tests = append(tests, effectContracts()...)
 	tests = append(tests, leaseContracts()...)
 	tests = append(tests, outboxContracts()...)

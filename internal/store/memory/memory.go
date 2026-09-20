@@ -41,6 +41,11 @@ func New(clk core.Clock) *Store {
 	return &Store{st: newState(), clock: clk}
 }
 
+type signalKey struct {
+	run core.RunID
+	id  core.SignalID
+}
+
 type stepKey struct {
 	run  core.RunID
 	step core.StepID
@@ -54,6 +59,7 @@ type state struct {
 	effects   map[core.IdempotencyKey]core.Effect // enforces UNIQUE (idempotency_key)
 	leases    map[core.TaskID]core.Lease
 	workers   map[string]core.Worker
+	signals   map[signalKey]core.Signal // enforces PRIMARY KEY (run_id, signal_id)
 
 	// The outbox. Published rows are kept and flagged rather than removed, so
 	// "was this task ever announced, and when?" survives the answer.
@@ -75,6 +81,7 @@ func newState() *state {
 		effects:   map[core.IdempotencyKey]core.Effect{},
 		leases:    map[core.TaskID]core.Lease{},
 		workers:   map[string]core.Worker{},
+		signals:   map[signalKey]core.Signal{},
 
 		deliveries:  map[core.DeliveryID]core.Delivery{},
 		published:   map[core.DeliveryID]bool{},
@@ -91,6 +98,7 @@ func (s *state) clone() *state {
 		effects:   make(map[core.IdempotencyKey]core.Effect, len(s.effects)),
 		leases:    make(map[core.TaskID]core.Lease, len(s.leases)),
 		workers:   make(map[string]core.Worker, len(s.workers)),
+		signals:   make(map[signalKey]core.Signal, len(s.signals)),
 
 		deliveries:  make(map[core.DeliveryID]core.Delivery, len(s.deliveries)),
 		published:   make(map[core.DeliveryID]bool, len(s.published)),
@@ -116,6 +124,9 @@ func (s *state) clone() *state {
 	}
 	for k, v := range s.workers {
 		c.workers[k] = v
+	}
+	for k, v := range s.signals {
+		c.signals[k] = v
 	}
 	for k, v := range s.deliveries {
 		c.deliveries[k] = v
