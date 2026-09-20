@@ -147,13 +147,84 @@ func (EffectClass) EnumDescriptor() ([]byte, []int) {
 	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{1}
 }
 
+type JoinKind int32
+
+const (
+	JoinKind_JOIN_KIND_UNSPECIFIED JoinKind = 0
+	// Wait for every child to reach a terminal state, successful or not.
+	JoinKind_JOIN_KIND_ALL JoinKind = 1
+	// Complete as soon as one child succeeds — or when every child has failed,
+	// which is the exit that gets forgotten. A join satisfiable only by success
+	// hangs forever on a bad day.
+	JoinKind_JOIN_KIND_ANY JoinKind = 2
+	// Complete at `quorum` successes, or as soon as too few children remain for
+	// that to be possible.
+	JoinKind_JOIN_KIND_QUORUM JoinKind = 3
+)
+
+// Enum value maps for JoinKind.
+var (
+	JoinKind_name = map[int32]string{
+		0: "JOIN_KIND_UNSPECIFIED",
+		1: "JOIN_KIND_ALL",
+		2: "JOIN_KIND_ANY",
+		3: "JOIN_KIND_QUORUM",
+	}
+	JoinKind_value = map[string]int32{
+		"JOIN_KIND_UNSPECIFIED": 0,
+		"JOIN_KIND_ALL":         1,
+		"JOIN_KIND_ANY":         2,
+		"JOIN_KIND_QUORUM":      3,
+	}
+)
+
+func (x JoinKind) Enum() *JoinKind {
+	p := new(JoinKind)
+	*p = x
+	return p
+}
+
+func (x JoinKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (JoinKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_veya_worker_v1_worker_proto_enumTypes[2].Descriptor()
+}
+
+func (JoinKind) Type() protoreflect.EnumType {
+	return &file_veya_worker_v1_worker_proto_enumTypes[2]
+}
+
+func (x JoinKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use JoinKind.Descriptor instead.
+func (JoinKind) EnumDescriptor() ([]byte, []int) {
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{2}
+}
+
+// DecisionKind is what the agent decided to do next.
+//
+// The whole Layer 5 surface is added here at once, including CANCEL and
+// COMPENSATE, which the runtime does not implement yet and refuses as
+// "not one this build knows". Adding an enum value later is free; renumbering
+// one never is, and this contract is public from its first commit.
 type DecisionKind int32
 
 const (
-	DecisionKind_DECISION_KIND_UNSPECIFIED DecisionKind = 0
-	DecisionKind_DECISION_KIND_CALL_TOOL   DecisionKind = 1
-	DecisionKind_DECISION_KIND_COMPLETE    DecisionKind = 2
-	DecisionKind_DECISION_KIND_FAIL        DecisionKind = 3
+	DecisionKind_DECISION_KIND_UNSPECIFIED        DecisionKind = 0
+	DecisionKind_DECISION_KIND_CALL_TOOL          DecisionKind = 1
+	DecisionKind_DECISION_KIND_COMPLETE           DecisionKind = 2
+	DecisionKind_DECISION_KIND_FAIL               DecisionKind = 3
+	DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL DecisionKind = 4
+	DecisionKind_DECISION_KIND_SLEEP              DecisionKind = 5
+	DecisionKind_DECISION_KIND_WAIT_FOR_SIGNAL    DecisionKind = 6
+	// Reserved for Layer 6. Named now so the numbering is settled; a runtime
+	// that meets one refuses it rather than misreading it as something else.
+	DecisionKind_DECISION_KIND_CANCEL     DecisionKind = 7
+	DecisionKind_DECISION_KIND_COMPENSATE DecisionKind = 8
 )
 
 // Enum value maps for DecisionKind.
@@ -163,12 +234,22 @@ var (
 		1: "DECISION_KIND_CALL_TOOL",
 		2: "DECISION_KIND_COMPLETE",
 		3: "DECISION_KIND_FAIL",
+		4: "DECISION_KIND_CALL_TOOL_PARALLEL",
+		5: "DECISION_KIND_SLEEP",
+		6: "DECISION_KIND_WAIT_FOR_SIGNAL",
+		7: "DECISION_KIND_CANCEL",
+		8: "DECISION_KIND_COMPENSATE",
 	}
 	DecisionKind_value = map[string]int32{
-		"DECISION_KIND_UNSPECIFIED": 0,
-		"DECISION_KIND_CALL_TOOL":   1,
-		"DECISION_KIND_COMPLETE":    2,
-		"DECISION_KIND_FAIL":        3,
+		"DECISION_KIND_UNSPECIFIED":        0,
+		"DECISION_KIND_CALL_TOOL":          1,
+		"DECISION_KIND_COMPLETE":           2,
+		"DECISION_KIND_FAIL":               3,
+		"DECISION_KIND_CALL_TOOL_PARALLEL": 4,
+		"DECISION_KIND_SLEEP":              5,
+		"DECISION_KIND_WAIT_FOR_SIGNAL":    6,
+		"DECISION_KIND_CANCEL":             7,
+		"DECISION_KIND_COMPENSATE":         8,
 	}
 )
 
@@ -183,11 +264,11 @@ func (x DecisionKind) String() string {
 }
 
 func (DecisionKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_veya_worker_v1_worker_proto_enumTypes[2].Descriptor()
+	return file_veya_worker_v1_worker_proto_enumTypes[3].Descriptor()
 }
 
 func (DecisionKind) Type() protoreflect.EnumType {
-	return &file_veya_worker_v1_worker_proto_enumTypes[2]
+	return &file_veya_worker_v1_worker_proto_enumTypes[3]
 }
 
 func (x DecisionKind) Number() protoreflect.EnumNumber {
@@ -196,7 +277,7 @@ func (x DecisionKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use DecisionKind.Descriptor instead.
 func (DecisionKind) EnumDescriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{2}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{3}
 }
 
 // ResolutionKind is what a reconciliation attempt established.
@@ -239,11 +320,11 @@ func (x ResolutionKind) String() string {
 }
 
 func (ResolutionKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_veya_worker_v1_worker_proto_enumTypes[3].Descriptor()
+	return file_veya_worker_v1_worker_proto_enumTypes[4].Descriptor()
 }
 
 func (ResolutionKind) Type() protoreflect.EnumType {
-	return &file_veya_worker_v1_worker_proto_enumTypes[3]
+	return &file_veya_worker_v1_worker_proto_enumTypes[4]
 }
 
 func (x ResolutionKind) Number() protoreflect.EnumNumber {
@@ -252,7 +333,7 @@ func (x ResolutionKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ResolutionKind.Descriptor instead.
 func (ResolutionKind) EnumDescriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{3}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{4}
 }
 
 // Certainty is what a failure proves about whether the action happened.
@@ -311,11 +392,11 @@ func (x Certainty) String() string {
 }
 
 func (Certainty) Descriptor() protoreflect.EnumDescriptor {
-	return file_veya_worker_v1_worker_proto_enumTypes[4].Descriptor()
+	return file_veya_worker_v1_worker_proto_enumTypes[5].Descriptor()
 }
 
 func (Certainty) Type() protoreflect.EnumType {
-	return &file_veya_worker_v1_worker_proto_enumTypes[4]
+	return &file_veya_worker_v1_worker_proto_enumTypes[5]
 }
 
 func (x Certainty) Number() protoreflect.EnumNumber {
@@ -324,7 +405,7 @@ func (x Certainty) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Certainty.Descriptor instead.
 func (Certainty) EnumDescriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{4}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{5}
 }
 
 // ClientMessage is anything a worker sends. The first one on a stream must be
@@ -965,17 +1046,36 @@ func (*DecideResult_Failure) isDecideResult_Outcome() {}
 type Decision struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Kind  DecisionKind           `protobuf:"varint,1,opt,name=kind,proto3,enum=veya.worker.v1.DecisionKind" json:"kind,omitempty"`
-	// Set when kind is CALL_TOOL. StepId is a run-relative logical position
-	// assigned by invocation order, never completion order — it is what the
-	// idempotency key is derived from, so it has to survive retries,
-	// reassignment and replay.
+	// Set when kind is CALL_TOOL, and when kind is CALL_TOOL_PARALLEL — where
+	// it is the *parent* step, and the children are numbered from it.
+	//
+	// StepId is a run-relative logical position assigned by invocation order,
+	// never completion order — it is what the idempotency key is derived from,
+	// so it has to survive retries, reassignment and replay.
 	StepId  string `protobuf:"bytes,2,opt,name=step_id,json=stepId,proto3" json:"step_id,omitempty"`
 	Tool    string `protobuf:"bytes,3,opt,name=tool,proto3" json:"tool,omitempty"`
 	Payload []byte `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
 	// Set when kind is COMPLETE.
 	Output []byte `protobuf:"bytes,5,opt,name=output,proto3" json:"output,omitempty"`
 	// Set when kind is FAIL.
-	Error         string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	// Set when kind is CALL_TOOL_PARALLEL.
+	//
+	// Repeated ToolCall inside one Decision, rather than repeated Decision.
+	// The other encoding is the obvious one and it permits nonsense: a sleep
+	// and a cancel in the same batch, two completes, a complete followed by a
+	// call. Every one of those would have to be rejected at runtime, in Go,
+	// with an error message the Python SDK then has to take care never to
+	// provoke. This shape makes them unrepresentable instead.
+	//
+	// Order is invocation order and is load-bearing: children are named from
+	// their position here. See docs/execution-model.md section 7.1.
+	Calls []*ToolCall `protobuf:"bytes,7,rep,name=calls,proto3" json:"calls,omitempty"`
+	Join  *JoinPolicy `protobuf:"bytes,8,opt,name=join,proto3" json:"join,omitempty"`
+	// Set when kind is SLEEP: the instant to wake at.
+	WakeAtUnixNano int64 `protobuf:"varint,9,opt,name=wake_at_unix_nano,json=wakeAtUnixNano,proto3" json:"wake_at_unix_nano,omitempty"`
+	// Set when kind is WAIT_FOR_SIGNAL.
+	Signal        *SignalWait `protobuf:"bytes,10,opt,name=signal,proto3" json:"signal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1052,6 +1152,213 @@ func (x *Decision) GetError() string {
 	return ""
 }
 
+func (x *Decision) GetCalls() []*ToolCall {
+	if x != nil {
+		return x.Calls
+	}
+	return nil
+}
+
+func (x *Decision) GetJoin() *JoinPolicy {
+	if x != nil {
+		return x.Join
+	}
+	return nil
+}
+
+func (x *Decision) GetWakeAtUnixNano() int64 {
+	if x != nil {
+		return x.WakeAtUnixNano
+	}
+	return 0
+}
+
+func (x *Decision) GetSignal() *SignalWait {
+	if x != nil {
+		return x.Signal
+	}
+	return nil
+}
+
+// ToolCall is one invocation inside a parallel decision.
+//
+// It carries no step id. The runtime numbers children parent.Child(i) from
+// their position in the calls list, so the naming rule has one definition
+// rather than one per client — and a client cannot accidentally give two
+// children the same key.
+type ToolCall struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tool          string                 `protobuf:"bytes,1,opt,name=tool,proto3" json:"tool,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,2,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ToolCall) Reset() {
+	*x = ToolCall{}
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ToolCall) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ToolCall) ProtoMessage() {}
+
+func (x *ToolCall) ProtoReflect() protoreflect.Message {
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ToolCall.ProtoReflect.Descriptor instead.
+func (*ToolCall) Descriptor() ([]byte, []int) {
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ToolCall) GetTool() string {
+	if x != nil {
+		return x.Tool
+	}
+	return ""
+}
+
+func (x *ToolCall) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+// JoinPolicy states when a fan-out has finished waiting.
+//
+// It never states what a partial failure *means*. Every outcome goes back to
+// the agent body in invocation order, successes and failures alike, and the
+// body decides — the runtime knows about effects and nothing about meaning.
+type JoinPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Kind  JoinKind               `protobuf:"varint,1,opt,name=kind,proto3,enum=veya.worker.v1.JoinKind" json:"kind,omitempty"`
+	// Quorum is how many successes JOIN_KIND_QUORUM needs. Ignored otherwise.
+	// A quorum larger than the fan-out is refused: it is unsatisfiable from the
+	// first instant, so it would park the run forever with nothing in the logs
+	// pointing at the cause.
+	Quorum        int32 `protobuf:"varint,2,opt,name=quorum,proto3" json:"quorum,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JoinPolicy) Reset() {
+	*x = JoinPolicy{}
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JoinPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JoinPolicy) ProtoMessage() {}
+
+func (x *JoinPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JoinPolicy.ProtoReflect.Descriptor instead.
+func (*JoinPolicy) Descriptor() ([]byte, []int) {
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *JoinPolicy) GetKind() JoinKind {
+	if x != nil {
+		return x.Kind
+	}
+	return JoinKind_JOIN_KIND_UNSPECIFIED
+}
+
+func (x *JoinPolicy) GetQuorum() int32 {
+	if x != nil {
+		return x.Quorum
+	}
+	return 0
+}
+
+// SignalWait is a run asking to be woken when something outside the system
+// happens.
+//
+// The wait is a read, not a delivery. A signal that arrived before the run got
+// here is already stored, so early and late arrival run identical code and the
+// early-signal race does not exist — see docs/execution-model.md section 4.
+type SignalWait struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// DeadlineUnixNano bounds the wait. Zero waits indefinitely, which is
+	// honest for a human approval and dangerous for anything automated.
+	DeadlineUnixNano int64 `protobuf:"varint,2,opt,name=deadline_unix_nano,json=deadlineUnixNano,proto3" json:"deadline_unix_nano,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *SignalWait) Reset() {
+	*x = SignalWait{}
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignalWait) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignalWait) ProtoMessage() {}
+
+func (x *SignalWait) ProtoReflect() protoreflect.Message {
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignalWait.ProtoReflect.Descriptor instead.
+func (*SignalWait) Descriptor() ([]byte, []int) {
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SignalWait) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SignalWait) GetDeadlineUnixNano() int64 {
+	if x != nil {
+		return x.DeadlineUnixNano
+	}
+	return 0
+}
+
 // Run is the durable state of one agent execution.
 type Run struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1066,7 +1373,7 @@ type Run struct {
 
 func (x *Run) Reset() {
 	*x = Run{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[8]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1078,7 +1385,7 @@ func (x *Run) String() string {
 func (*Run) ProtoMessage() {}
 
 func (x *Run) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[8]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1091,7 +1398,7 @@ func (x *Run) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Run.ProtoReflect.Descriptor instead.
 func (*Run) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{8}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Run) GetRunId() string {
@@ -1149,7 +1456,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[9]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1161,7 +1468,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[9]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1174,7 +1481,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{9}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Event) GetRunId() string {
@@ -1247,7 +1554,7 @@ type ExecuteRequest struct {
 
 func (x *ExecuteRequest) Reset() {
 	*x = ExecuteRequest{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[10]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1259,7 +1566,7 @@ func (x *ExecuteRequest) String() string {
 func (*ExecuteRequest) ProtoMessage() {}
 
 func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[10]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1272,7 +1579,7 @@ func (x *ExecuteRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteRequest.ProtoReflect.Descriptor instead.
 func (*ExecuteRequest) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{10}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ExecuteRequest) GetCallId() string {
@@ -1345,7 +1652,7 @@ type ExecuteResult struct {
 
 func (x *ExecuteResult) Reset() {
 	*x = ExecuteResult{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[11]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1357,7 +1664,7 @@ func (x *ExecuteResult) String() string {
 func (*ExecuteResult) ProtoMessage() {}
 
 func (x *ExecuteResult) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[11]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1370,7 +1677,7 @@ func (x *ExecuteResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteResult.ProtoReflect.Descriptor instead.
 func (*ExecuteResult) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{11}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ExecuteResult) GetCallId() string {
@@ -1441,7 +1748,7 @@ type ReconcileRequest struct {
 
 func (x *ReconcileRequest) Reset() {
 	*x = ReconcileRequest{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[12]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1453,7 +1760,7 @@ func (x *ReconcileRequest) String() string {
 func (*ReconcileRequest) ProtoMessage() {}
 
 func (x *ReconcileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[12]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1466,7 +1773,7 @@ func (x *ReconcileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileRequest.ProtoReflect.Descriptor instead.
 func (*ReconcileRequest) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{12}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ReconcileRequest) GetCallId() string {
@@ -1504,7 +1811,7 @@ type ReconcileResult struct {
 
 func (x *ReconcileResult) Reset() {
 	*x = ReconcileResult{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[13]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1516,7 +1823,7 @@ func (x *ReconcileResult) String() string {
 func (*ReconcileResult) ProtoMessage() {}
 
 func (x *ReconcileResult) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[13]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1529,7 +1836,7 @@ func (x *ReconcileResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReconcileResult.ProtoReflect.Descriptor instead.
 func (*ReconcileResult) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{13}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ReconcileResult) GetCallId() string {
@@ -1592,7 +1899,7 @@ type Resolution struct {
 
 func (x *Resolution) Reset() {
 	*x = Resolution{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[14]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1604,7 +1911,7 @@ func (x *Resolution) String() string {
 func (*Resolution) ProtoMessage() {}
 
 func (x *Resolution) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[14]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1617,7 +1924,7 @@ func (x *Resolution) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Resolution.ProtoReflect.Descriptor instead.
 func (*Resolution) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{14}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Resolution) GetKind() ResolutionKind {
@@ -1668,7 +1975,7 @@ type Effect struct {
 
 func (x *Effect) Reset() {
 	*x = Effect{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[15]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1680,7 +1987,7 @@ func (x *Effect) String() string {
 func (*Effect) ProtoMessage() {}
 
 func (x *Effect) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[15]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1693,7 +2000,7 @@ func (x *Effect) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Effect.ProtoReflect.Descriptor instead.
 func (*Effect) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{15}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Effect) GetEffectId() string {
@@ -1789,7 +2096,7 @@ type Failure struct {
 
 func (x *Failure) Reset() {
 	*x = Failure{}
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[16]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1801,7 +2108,7 @@ func (x *Failure) String() string {
 func (*Failure) ProtoMessage() {}
 
 func (x *Failure) ProtoReflect() protoreflect.Message {
-	mi := &file_veya_worker_v1_worker_proto_msgTypes[16]
+	mi := &file_veya_worker_v1_worker_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1814,7 +2121,7 @@ func (x *Failure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Failure.ProtoReflect.Descriptor instead.
 func (*Failure) Descriptor() ([]byte, []int) {
-	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{16}
+	return file_veya_worker_v1_worker_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Failure) GetMessage() string {
@@ -1884,14 +2191,30 @@ const file_veya_worker_v1_worker_proto_rawDesc = "" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x126\n" +
 	"\bdecision\x18\x02 \x01(\v2\x18.veya.worker.v1.DecisionH\x00R\bdecision\x123\n" +
 	"\afailure\x18\x03 \x01(\v2\x17.veya.worker.v1.FailureH\x00R\afailureB\t\n" +
-	"\aoutcome\"\xb1\x01\n" +
+	"\aoutcome\"\xf0\x02\n" +
 	"\bDecision\x120\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1c.veya.worker.v1.DecisionKindR\x04kind\x12\x17\n" +
 	"\astep_id\x18\x02 \x01(\tR\x06stepId\x12\x12\n" +
 	"\x04tool\x18\x03 \x01(\tR\x04tool\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\x12\x16\n" +
 	"\x06output\x18\x05 \x01(\fR\x06output\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\x8e\x01\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\x12.\n" +
+	"\x05calls\x18\a \x03(\v2\x18.veya.worker.v1.ToolCallR\x05calls\x12.\n" +
+	"\x04join\x18\b \x01(\v2\x1a.veya.worker.v1.JoinPolicyR\x04join\x12)\n" +
+	"\x11wake_at_unix_nano\x18\t \x01(\x03R\x0ewakeAtUnixNano\x122\n" +
+	"\x06signal\x18\n" +
+	" \x01(\v2\x1a.veya.worker.v1.SignalWaitR\x06signal\"8\n" +
+	"\bToolCall\x12\x12\n" +
+	"\x04tool\x18\x01 \x01(\tR\x04tool\x12\x18\n" +
+	"\apayload\x18\x02 \x01(\fR\apayload\"R\n" +
+	"\n" +
+	"JoinPolicy\x12,\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x18.veya.worker.v1.JoinKindR\x04kind\x12\x16\n" +
+	"\x06quorum\x18\x02 \x01(\x05R\x06quorum\"N\n" +
+	"\n" +
+	"SignalWait\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
+	"\x12deadline_unix_nano\x18\x02 \x01(\x03R\x10deadlineUnixNano\"\x8e\x01\n" +
 	"\x03Run\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1d\n" +
 	"\n" +
@@ -1963,12 +2286,22 @@ const file_veya_worker_v1_worker_proto_rawDesc = "" +
 	"\x11EFFECT_CLASS_NONE\x10\x01\x12\"\n" +
 	"\x1eEFFECT_CLASS_IDEMPOTENT_BY_KEY\x10\x02\x12\x1a\n" +
 	"\x16EFFECT_CLASS_QUERYABLE\x10\x03\x12\x1f\n" +
-	"\x1bEFFECT_CLASS_UNRECONCILABLE\x10\x04*~\n" +
+	"\x1bEFFECT_CLASS_UNRECONCILABLE\x10\x04*a\n" +
+	"\bJoinKind\x12\x19\n" +
+	"\x15JOIN_KIND_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rJOIN_KIND_ALL\x10\x01\x12\x11\n" +
+	"\rJOIN_KIND_ANY\x10\x02\x12\x14\n" +
+	"\x10JOIN_KIND_QUORUM\x10\x03*\x98\x02\n" +
 	"\fDecisionKind\x12\x1d\n" +
 	"\x19DECISION_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DECISION_KIND_CALL_TOOL\x10\x01\x12\x1a\n" +
 	"\x16DECISION_KIND_COMPLETE\x10\x02\x12\x16\n" +
-	"\x12DECISION_KIND_FAIL\x10\x03*\x95\x01\n" +
+	"\x12DECISION_KIND_FAIL\x10\x03\x12$\n" +
+	" DECISION_KIND_CALL_TOOL_PARALLEL\x10\x04\x12\x17\n" +
+	"\x13DECISION_KIND_SLEEP\x10\x05\x12!\n" +
+	"\x1dDECISION_KIND_WAIT_FOR_SIGNAL\x10\x06\x12\x18\n" +
+	"\x14DECISION_KIND_CANCEL\x10\a\x12\x1c\n" +
+	"\x18DECISION_KIND_COMPENSATE\x10\b*\x95\x01\n" +
 	"\x0eResolutionKind\x12\x1f\n" +
 	"\x1bRESOLUTION_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19RESOLUTION_KIND_COMMITTED\x10\x01\x12 \n" +
@@ -1993,63 +2326,71 @@ func file_veya_worker_v1_worker_proto_rawDescGZIP() []byte {
 	return file_veya_worker_v1_worker_proto_rawDescData
 }
 
-var file_veya_worker_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_veya_worker_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_veya_worker_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_veya_worker_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_veya_worker_v1_worker_proto_goTypes = []any{
 	(ProtocolVersion)(0),     // 0: veya.worker.v1.ProtocolVersion
 	(EffectClass)(0),         // 1: veya.worker.v1.EffectClass
-	(DecisionKind)(0),        // 2: veya.worker.v1.DecisionKind
-	(ResolutionKind)(0),      // 3: veya.worker.v1.ResolutionKind
-	(Certainty)(0),           // 4: veya.worker.v1.Certainty
-	(*ClientMessage)(nil),    // 5: veya.worker.v1.ClientMessage
-	(*ServerMessage)(nil),    // 6: veya.worker.v1.ServerMessage
-	(*Register)(nil),         // 7: veya.worker.v1.Register
-	(*Registered)(nil),       // 8: veya.worker.v1.Registered
-	(*ToolDescriptor)(nil),   // 9: veya.worker.v1.ToolDescriptor
-	(*DecideRequest)(nil),    // 10: veya.worker.v1.DecideRequest
-	(*DecideResult)(nil),     // 11: veya.worker.v1.DecideResult
-	(*Decision)(nil),         // 12: veya.worker.v1.Decision
-	(*Run)(nil),              // 13: veya.worker.v1.Run
-	(*Event)(nil),            // 14: veya.worker.v1.Event
-	(*ExecuteRequest)(nil),   // 15: veya.worker.v1.ExecuteRequest
-	(*ExecuteResult)(nil),    // 16: veya.worker.v1.ExecuteResult
-	(*ReconcileRequest)(nil), // 17: veya.worker.v1.ReconcileRequest
-	(*ReconcileResult)(nil),  // 18: veya.worker.v1.ReconcileResult
-	(*Resolution)(nil),       // 19: veya.worker.v1.Resolution
-	(*Effect)(nil),           // 20: veya.worker.v1.Effect
-	(*Failure)(nil),          // 21: veya.worker.v1.Failure
+	(JoinKind)(0),            // 2: veya.worker.v1.JoinKind
+	(DecisionKind)(0),        // 3: veya.worker.v1.DecisionKind
+	(ResolutionKind)(0),      // 4: veya.worker.v1.ResolutionKind
+	(Certainty)(0),           // 5: veya.worker.v1.Certainty
+	(*ClientMessage)(nil),    // 6: veya.worker.v1.ClientMessage
+	(*ServerMessage)(nil),    // 7: veya.worker.v1.ServerMessage
+	(*Register)(nil),         // 8: veya.worker.v1.Register
+	(*Registered)(nil),       // 9: veya.worker.v1.Registered
+	(*ToolDescriptor)(nil),   // 10: veya.worker.v1.ToolDescriptor
+	(*DecideRequest)(nil),    // 11: veya.worker.v1.DecideRequest
+	(*DecideResult)(nil),     // 12: veya.worker.v1.DecideResult
+	(*Decision)(nil),         // 13: veya.worker.v1.Decision
+	(*ToolCall)(nil),         // 14: veya.worker.v1.ToolCall
+	(*JoinPolicy)(nil),       // 15: veya.worker.v1.JoinPolicy
+	(*SignalWait)(nil),       // 16: veya.worker.v1.SignalWait
+	(*Run)(nil),              // 17: veya.worker.v1.Run
+	(*Event)(nil),            // 18: veya.worker.v1.Event
+	(*ExecuteRequest)(nil),   // 19: veya.worker.v1.ExecuteRequest
+	(*ExecuteResult)(nil),    // 20: veya.worker.v1.ExecuteResult
+	(*ReconcileRequest)(nil), // 21: veya.worker.v1.ReconcileRequest
+	(*ReconcileResult)(nil),  // 22: veya.worker.v1.ReconcileResult
+	(*Resolution)(nil),       // 23: veya.worker.v1.Resolution
+	(*Effect)(nil),           // 24: veya.worker.v1.Effect
+	(*Failure)(nil),          // 25: veya.worker.v1.Failure
 }
 var file_veya_worker_v1_worker_proto_depIdxs = []int32{
-	7,  // 0: veya.worker.v1.ClientMessage.register:type_name -> veya.worker.v1.Register
-	11, // 1: veya.worker.v1.ClientMessage.decide_result:type_name -> veya.worker.v1.DecideResult
-	16, // 2: veya.worker.v1.ClientMessage.execute_result:type_name -> veya.worker.v1.ExecuteResult
-	18, // 3: veya.worker.v1.ClientMessage.reconcile_result:type_name -> veya.worker.v1.ReconcileResult
-	8,  // 4: veya.worker.v1.ServerMessage.registered:type_name -> veya.worker.v1.Registered
-	10, // 5: veya.worker.v1.ServerMessage.decide:type_name -> veya.worker.v1.DecideRequest
-	15, // 6: veya.worker.v1.ServerMessage.execute:type_name -> veya.worker.v1.ExecuteRequest
-	17, // 7: veya.worker.v1.ServerMessage.reconcile:type_name -> veya.worker.v1.ReconcileRequest
+	8,  // 0: veya.worker.v1.ClientMessage.register:type_name -> veya.worker.v1.Register
+	12, // 1: veya.worker.v1.ClientMessage.decide_result:type_name -> veya.worker.v1.DecideResult
+	20, // 2: veya.worker.v1.ClientMessage.execute_result:type_name -> veya.worker.v1.ExecuteResult
+	22, // 3: veya.worker.v1.ClientMessage.reconcile_result:type_name -> veya.worker.v1.ReconcileResult
+	9,  // 4: veya.worker.v1.ServerMessage.registered:type_name -> veya.worker.v1.Registered
+	11, // 5: veya.worker.v1.ServerMessage.decide:type_name -> veya.worker.v1.DecideRequest
+	19, // 6: veya.worker.v1.ServerMessage.execute:type_name -> veya.worker.v1.ExecuteRequest
+	21, // 7: veya.worker.v1.ServerMessage.reconcile:type_name -> veya.worker.v1.ReconcileRequest
 	0,  // 8: veya.worker.v1.Register.protocol_version:type_name -> veya.worker.v1.ProtocolVersion
-	9,  // 9: veya.worker.v1.Register.tools:type_name -> veya.worker.v1.ToolDescriptor
+	10, // 9: veya.worker.v1.Register.tools:type_name -> veya.worker.v1.ToolDescriptor
 	1,  // 10: veya.worker.v1.ToolDescriptor.effect_class:type_name -> veya.worker.v1.EffectClass
-	13, // 11: veya.worker.v1.DecideRequest.run:type_name -> veya.worker.v1.Run
-	14, // 12: veya.worker.v1.DecideRequest.history:type_name -> veya.worker.v1.Event
-	12, // 13: veya.worker.v1.DecideResult.decision:type_name -> veya.worker.v1.Decision
-	21, // 14: veya.worker.v1.DecideResult.failure:type_name -> veya.worker.v1.Failure
-	2,  // 15: veya.worker.v1.Decision.kind:type_name -> veya.worker.v1.DecisionKind
-	21, // 16: veya.worker.v1.ExecuteResult.failure:type_name -> veya.worker.v1.Failure
-	20, // 17: veya.worker.v1.ReconcileRequest.effect:type_name -> veya.worker.v1.Effect
-	19, // 18: veya.worker.v1.ReconcileResult.resolution:type_name -> veya.worker.v1.Resolution
-	21, // 19: veya.worker.v1.ReconcileResult.failure:type_name -> veya.worker.v1.Failure
-	3,  // 20: veya.worker.v1.Resolution.kind:type_name -> veya.worker.v1.ResolutionKind
-	1,  // 21: veya.worker.v1.Effect.effect_class:type_name -> veya.worker.v1.EffectClass
-	4,  // 22: veya.worker.v1.Failure.certainty:type_name -> veya.worker.v1.Certainty
-	5,  // 23: veya.worker.v1.Worker.Session:input_type -> veya.worker.v1.ClientMessage
-	6,  // 24: veya.worker.v1.Worker.Session:output_type -> veya.worker.v1.ServerMessage
-	24, // [24:25] is the sub-list for method output_type
-	23, // [23:24] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	17, // 11: veya.worker.v1.DecideRequest.run:type_name -> veya.worker.v1.Run
+	18, // 12: veya.worker.v1.DecideRequest.history:type_name -> veya.worker.v1.Event
+	13, // 13: veya.worker.v1.DecideResult.decision:type_name -> veya.worker.v1.Decision
+	25, // 14: veya.worker.v1.DecideResult.failure:type_name -> veya.worker.v1.Failure
+	3,  // 15: veya.worker.v1.Decision.kind:type_name -> veya.worker.v1.DecisionKind
+	14, // 16: veya.worker.v1.Decision.calls:type_name -> veya.worker.v1.ToolCall
+	15, // 17: veya.worker.v1.Decision.join:type_name -> veya.worker.v1.JoinPolicy
+	16, // 18: veya.worker.v1.Decision.signal:type_name -> veya.worker.v1.SignalWait
+	2,  // 19: veya.worker.v1.JoinPolicy.kind:type_name -> veya.worker.v1.JoinKind
+	25, // 20: veya.worker.v1.ExecuteResult.failure:type_name -> veya.worker.v1.Failure
+	24, // 21: veya.worker.v1.ReconcileRequest.effect:type_name -> veya.worker.v1.Effect
+	23, // 22: veya.worker.v1.ReconcileResult.resolution:type_name -> veya.worker.v1.Resolution
+	25, // 23: veya.worker.v1.ReconcileResult.failure:type_name -> veya.worker.v1.Failure
+	4,  // 24: veya.worker.v1.Resolution.kind:type_name -> veya.worker.v1.ResolutionKind
+	1,  // 25: veya.worker.v1.Effect.effect_class:type_name -> veya.worker.v1.EffectClass
+	5,  // 26: veya.worker.v1.Failure.certainty:type_name -> veya.worker.v1.Certainty
+	6,  // 27: veya.worker.v1.Worker.Session:input_type -> veya.worker.v1.ClientMessage
+	7,  // 28: veya.worker.v1.Worker.Session:output_type -> veya.worker.v1.ServerMessage
+	28, // [28:29] is the sub-list for method output_type
+	27, // [27:28] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_veya_worker_v1_worker_proto_init() }
@@ -2073,11 +2414,11 @@ func file_veya_worker_v1_worker_proto_init() {
 		(*DecideResult_Decision)(nil),
 		(*DecideResult_Failure)(nil),
 	}
-	file_veya_worker_v1_worker_proto_msgTypes[11].OneofWrappers = []any{
+	file_veya_worker_v1_worker_proto_msgTypes[14].OneofWrappers = []any{
 		(*ExecuteResult_Result)(nil),
 		(*ExecuteResult_Failure)(nil),
 	}
-	file_veya_worker_v1_worker_proto_msgTypes[13].OneofWrappers = []any{
+	file_veya_worker_v1_worker_proto_msgTypes[16].OneofWrappers = []any{
 		(*ReconcileResult_Resolution)(nil),
 		(*ReconcileResult_Failure)(nil),
 	}
@@ -2086,8 +2427,8 @@ func file_veya_worker_v1_worker_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_veya_worker_v1_worker_proto_rawDesc), len(file_veya_worker_v1_worker_proto_rawDesc)),
-			NumEnums:      5,
-			NumMessages:   17,
+			NumEnums:      6,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

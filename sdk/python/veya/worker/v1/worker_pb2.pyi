@@ -20,12 +20,24 @@ class EffectClass(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     EFFECT_CLASS_QUERYABLE: _ClassVar[EffectClass]
     EFFECT_CLASS_UNRECONCILABLE: _ClassVar[EffectClass]
 
+class JoinKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    JOIN_KIND_UNSPECIFIED: _ClassVar[JoinKind]
+    JOIN_KIND_ALL: _ClassVar[JoinKind]
+    JOIN_KIND_ANY: _ClassVar[JoinKind]
+    JOIN_KIND_QUORUM: _ClassVar[JoinKind]
+
 class DecisionKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     DECISION_KIND_UNSPECIFIED: _ClassVar[DecisionKind]
     DECISION_KIND_CALL_TOOL: _ClassVar[DecisionKind]
     DECISION_KIND_COMPLETE: _ClassVar[DecisionKind]
     DECISION_KIND_FAIL: _ClassVar[DecisionKind]
+    DECISION_KIND_CALL_TOOL_PARALLEL: _ClassVar[DecisionKind]
+    DECISION_KIND_SLEEP: _ClassVar[DecisionKind]
+    DECISION_KIND_WAIT_FOR_SIGNAL: _ClassVar[DecisionKind]
+    DECISION_KIND_CANCEL: _ClassVar[DecisionKind]
+    DECISION_KIND_COMPENSATE: _ClassVar[DecisionKind]
 
 class ResolutionKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -46,10 +58,19 @@ EFFECT_CLASS_NONE: EffectClass
 EFFECT_CLASS_IDEMPOTENT_BY_KEY: EffectClass
 EFFECT_CLASS_QUERYABLE: EffectClass
 EFFECT_CLASS_UNRECONCILABLE: EffectClass
+JOIN_KIND_UNSPECIFIED: JoinKind
+JOIN_KIND_ALL: JoinKind
+JOIN_KIND_ANY: JoinKind
+JOIN_KIND_QUORUM: JoinKind
 DECISION_KIND_UNSPECIFIED: DecisionKind
 DECISION_KIND_CALL_TOOL: DecisionKind
 DECISION_KIND_COMPLETE: DecisionKind
 DECISION_KIND_FAIL: DecisionKind
+DECISION_KIND_CALL_TOOL_PARALLEL: DecisionKind
+DECISION_KIND_SLEEP: DecisionKind
+DECISION_KIND_WAIT_FOR_SIGNAL: DecisionKind
+DECISION_KIND_CANCEL: DecisionKind
+DECISION_KIND_COMPENSATE: DecisionKind
 RESOLUTION_KIND_UNSPECIFIED: ResolutionKind
 RESOLUTION_KIND_COMMITTED: ResolutionKind
 RESOLUTION_KIND_NOT_EXECUTED: ResolutionKind
@@ -141,20 +162,52 @@ class DecideResult(_message.Message):
     def __init__(self, call_id: _Optional[str] = ..., decision: _Optional[_Union[Decision, _Mapping]] = ..., failure: _Optional[_Union[Failure, _Mapping]] = ...) -> None: ...
 
 class Decision(_message.Message):
-    __slots__ = ("kind", "step_id", "tool", "payload", "output", "error")
+    __slots__ = ("kind", "step_id", "tool", "payload", "output", "error", "calls", "join", "wake_at_unix_nano", "signal")
     KIND_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
     TOOL_FIELD_NUMBER: _ClassVar[int]
     PAYLOAD_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
+    CALLS_FIELD_NUMBER: _ClassVar[int]
+    JOIN_FIELD_NUMBER: _ClassVar[int]
+    WAKE_AT_UNIX_NANO_FIELD_NUMBER: _ClassVar[int]
+    SIGNAL_FIELD_NUMBER: _ClassVar[int]
     kind: DecisionKind
     step_id: str
     tool: str
     payload: bytes
     output: bytes
     error: str
-    def __init__(self, kind: _Optional[_Union[DecisionKind, str]] = ..., step_id: _Optional[str] = ..., tool: _Optional[str] = ..., payload: _Optional[bytes] = ..., output: _Optional[bytes] = ..., error: _Optional[str] = ...) -> None: ...
+    calls: _containers.RepeatedCompositeFieldContainer[ToolCall]
+    join: JoinPolicy
+    wake_at_unix_nano: int
+    signal: SignalWait
+    def __init__(self, kind: _Optional[_Union[DecisionKind, str]] = ..., step_id: _Optional[str] = ..., tool: _Optional[str] = ..., payload: _Optional[bytes] = ..., output: _Optional[bytes] = ..., error: _Optional[str] = ..., calls: _Optional[_Iterable[_Union[ToolCall, _Mapping]]] = ..., join: _Optional[_Union[JoinPolicy, _Mapping]] = ..., wake_at_unix_nano: _Optional[int] = ..., signal: _Optional[_Union[SignalWait, _Mapping]] = ...) -> None: ...
+
+class ToolCall(_message.Message):
+    __slots__ = ("tool", "payload")
+    TOOL_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_FIELD_NUMBER: _ClassVar[int]
+    tool: str
+    payload: bytes
+    def __init__(self, tool: _Optional[str] = ..., payload: _Optional[bytes] = ...) -> None: ...
+
+class JoinPolicy(_message.Message):
+    __slots__ = ("kind", "quorum")
+    KIND_FIELD_NUMBER: _ClassVar[int]
+    QUORUM_FIELD_NUMBER: _ClassVar[int]
+    kind: JoinKind
+    quorum: int
+    def __init__(self, kind: _Optional[_Union[JoinKind, str]] = ..., quorum: _Optional[int] = ...) -> None: ...
+
+class SignalWait(_message.Message):
+    __slots__ = ("name", "deadline_unix_nano")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    DEADLINE_UNIX_NANO_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    deadline_unix_nano: int
+    def __init__(self, name: _Optional[str] = ..., deadline_unix_nano: _Optional[int] = ...) -> None: ...
 
 class Run(_message.Message):
     __slots__ = ("run_id", "agent_name", "agent_version", "status", "input")
