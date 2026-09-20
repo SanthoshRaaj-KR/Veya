@@ -102,6 +102,10 @@ demo-jetstream: ## Same demo, delivered over NATS JetStream
 demo-python: ## Run the Python refund agent end to end, no Docker
 	@bash scripts/demo-python.sh
 
+.PHONY: demo-onboarding
+demo-onboarding: ## The Layer 5 example: fan-out, a timer and a human approval
+	@bash scripts/demo-onboarding.sh
+
 .PHONY: sdk-install
 sdk-install: ## Install the Python SDK and its dev dependencies, editable
 	python -m pip install -e "sdk/python[dev]"
