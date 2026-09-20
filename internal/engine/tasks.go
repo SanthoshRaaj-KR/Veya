@@ -144,6 +144,7 @@ func (e *Engine) CompleteTask(ctx context.Context, id core.TaskID, token core.Fe
 func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.FencingToken, cause error) error {
 	var (
 		runID   core.RunID
+		stepID  core.StepID
 		retry   bool
 		attempt int
 	)
@@ -156,6 +157,7 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 			return err
 		}
 		runID = task.RunID
+		stepID = task.StepID
 		attempt = task.Attempt
 		retry = !task.Exhausted() && !escalated
 
@@ -219,13 +221,34 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 		return nil
 	}
 
-	// Retries exhausted. The run cannot proceed past a step that will not
-	// complete, so it fails with the cause rather than stalling silently.
+	// An escalated task stops the run whatever shape it is in. The effect's
+	// outcome is unresolved -- the outside world may or may not have
+	// changed -- and carrying on past that is how a run acts twice on
+	// something a human has not yet looked at.
 	if escalated {
 		e.log.Error("task stopped for human resolution", "task_id", id, "reason", reason)
 		return e.failRun(ctx, runID, fmt.Sprintf("task %s needs human resolution: %s", id, reason))
 	}
+
 	e.log.Error("task dead lettered", "task_id", id, "attempts", attempt, "error", reason)
+
+	// A dead-lettered child of a fan-out is one outcome among several, and
+	// what it means is the body's business, not the engine's. Three
+	// failures out of ten is a disaster or a Tuesday depending on the agent
+	// -- docs/execution-model.md section 7.3 -- and the failure is already
+	// recorded as TASK_FAILED with Final set, which is what the join reads.
+	//
+	// Before fan-out this distinction did not exist: one step was in flight
+	// at a time, so a step that would never complete was a run that could
+	// never proceed. Failing the run was right then and is wrong now.
+	if _, isChild := stepID.Parent(); isChild {
+		e.log.Info("a fan-out child failed for good; the agent decides what that means",
+			"run_id", runID, "task_id", id, "step_id", stepID)
+		return e.Advance(ctx, runID)
+	}
+
+	// A top-level step that will not complete is a run that cannot proceed,
+	// so it fails with the cause rather than stalling silently.
 	return e.failRun(ctx, runID, fmt.Sprintf("task %s exhausted %d attempts: %s", id, attempt, reason))
 }
 
