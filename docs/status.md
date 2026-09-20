@@ -1,7 +1,7 @@
 # Project Status and Phase Handoff
 
-**As of:** 19 September 2026 · `main` at `b50be0e` · working tree clean
-**Complete:** Layers 1, 2, 3, 4 · **Next:** Layer 5 — Execution model completeness
+**As of:** 20 September 2026 · `main` at `27553ff` · working tree clean
+**Complete:** Layers 1, 2, 3, 4 · **In progress:** Layer 5 — Suspension and fan-out
 
 This is the running status file. It records what is done and verified, what is
 knowingly left open, and what Layer 5 needs before it starts. Update it at the
@@ -9,6 +9,7 @@ end of each phase.
 
 - Ideas and reasoning → [architecture-primer.md](architecture-primer.md)
 - Where code lives → [code-map.md](code-map.md)
+- How a run waits and branches → [execution-model.md](execution-model.md)
 - Why the worker boundary is where it is → [worker-protocol.md](worker-protocol.md)
 - Specification → [../README.md](../README.md)
 
@@ -73,7 +74,7 @@ engine change was a bug the layer *found* rather than one it needed — see §3.
 | `gofmt -l .` | clean |
 | `make demo` / `demo-memory` / `demo-jetstream` | complete |
 | Two-process run (runtime `--workers 0` + `veya-worker`) | completes |
-| `make test-integration` (PostgreSQL 16 + NATS 2) | **not re-run this phase** — no Docker daemon on this machine; CI runs it |
+| `make test-integration` (PostgreSQL 16 + NATS 2) | **217 PASS**, all green — re-run locally on 20 September, first time since Layer 3 |
 | `make test-race` | **not run locally** — no C toolchain; CI runs it with `-count=2` |
 
 Size: 78 Go files (~18,700 lines), 16 Python files (~3,600 lines).
@@ -272,41 +273,30 @@ Roadmap items:
 | `core.ErrUnavailable` | `internal/core/errors.go` | a run waiting on a timer or a signal is not a failed run, and the engine already knows the difference |
 | `tool.KeyTTL` | `internal/core/tool.go` | per-tool policy already lives on the descriptor; retry policy joins it there rather than in a switch |
 
-### 5.2 Decisions Layer 5 has to make first
+### 5.2 Decisions Layer 5 had to make first
 
-1. **Where a suspension lives.** `ctx.sleep` and `ctx.wait_for` suspend the
-   body the way `ctx.call` does, but there is no task to wait on. A run
-   waiting on a timer is RUNNING with nothing in flight, which is exactly what
-   `RunsAwaitingAdvance` returns — so the recovery scan would spin on it.
-   Either runs gain an `available_at`, or the query learns about waiting.
-   Decide which before writing the timer wheel.
+All five are settled, with the argument, in
+[execution-model.md](execution-model.md). In one line each:
 
-2. **What a parallel decision looks like on the wire.** `CallToolParallel`
-   returns *several* calls from one `Decide`. That is a `repeated Decision`
-   or a new message; the choice constrains how the SDK expresses fan-out, and
-   the protocol is public, so it is worth settling on paper first.
+| # | Question | Answer |
+|---|---|---|
+| 1 | Where a suspension lives | a nullable `available_at` on `runs` and one predicate in `RunsAwaitingAdvance`, not a `WAITING` run state |
+| 2 | What a parallel decision looks like on the wire | `repeated ToolCall` inside one `Decision`, with a `JoinPolicy`, not `repeated Decision` |
+| 3 | How a signal reaches a waiting run | stored on arrival keyed `(run_id, signal_id)`; `wait_for` is a read, so early and late arrival run the same code |
+| 4 | Whether compensation is a decision or a mode | ordinary `CallTool` decisions the decider emits; the engine keeps knowing nothing about meaning |
+| 5 | Whether Python gets `effect_seq` now | no. Fan-out makes child *step* IDs real; sub-effects stay deferred |
 
-3. **How a signal reaches a waiting run.** Signal ingestion, dedup on signal
-   ID, and — the part that is always got wrong — correct behaviour for a
-   signal that arrives *before* the run waits for it. It must not be lost, so
-   it is stored, which means it is a new table and a new port.
+The same document writes down join semantics for a partially-complete fan-out,
+which the plan named as the sequencing risk: it is cheap to state now and a
+migration to discover later.
 
-4. **Whether compensation is a decision or a mode.** Running compensations in
-   reverse over `COMMITTED` effects is either a sequence of ordinary
-   `CallTool` decisions the decider emits, or a runtime-driven phase the
-   decider is not consulted about. The first keeps the engine ignorant, which
-   is the design's habit; the second is harder to get wrong from user code.
+### 5.3 Entry criteria
 
-5. **Whether the Python SDK gets `effect_seq` at the same time.** Sub-effects
-   and fan-out are separate features that both make the numbering real. Doing
-   both at once repeats the mistake Layer 4 avoided.
-
-### 5.3 Suggested entry criteria
-
-- [ ] `make test-integration` green on a machine with Docker — it has not run
-      since Layer 3, and Layer 4 changed `engine.Advance`
-- [ ] Suspension model chosen and written down (5.2 #1)
-- [ ] Parallel decision shape chosen (5.2 #2), since the `.proto` is public
+- [x] `make test-integration` green on a machine with Docker — **217 PASS**,
+      re-run on 20 September, first time since Layer 3
+- [x] Suspension model chosen and written down (5.2 #1)
+- [x] Parallel decision shape chosen (5.2 #2), since the `.proto` is public
+- [x] Join semantics for a partially-complete fan-out written down
 
 ---
 
