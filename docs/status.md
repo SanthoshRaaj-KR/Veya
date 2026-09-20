@@ -307,11 +307,13 @@ same bug a real engine would have if it rounded or defaulted a wake-up.
   later changes a caller rather than a constant, and pin the keys already
   issued with a literal-valued regression test. The argued decision won over
   the inherited bullet.
-- **32 commits became 31.** Plan commits 22 and 23 both turned out to be about
-  `effect_seq` and the ledger under fan-out, and the ledger needed no change —
-  children get distinct keys by getting distinct step ids. They became one
-  `feat(core)` commit and one `feat(effects)` commit of tests plus a contract.
-  The `fix(engine)` above was not in the plan at all.
+- **32 planned commits, 33 delivered, not the same ones.** Plan commits 22 and 23
+  both turned out to be the same question — `effect_seq` and the ledger under
+  fan-out — and the ledger needed no change at all, because children get
+  distinct keys by getting distinct step ids. They became one `feat(core)`
+  commit about the numbering and one `feat(effects)` commit of tests plus a
+  store contract. The `fix(engine)` in the table above was not in the plan — a
+  test found it — and this correction is the thirty-third.
 
 ---
 
