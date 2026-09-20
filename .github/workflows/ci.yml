@@ -167,21 +167,6 @@ jobs:
           --health-timeout 3s
           --health-retries 30
 
-      nats:
-        image: nats:2-alpine
-        ports:
-          - 4222:4222
-          - 8222:8222
-        # A service container cannot override the image's command, so
-        # monitoring is not available here and the healthcheck is the TCP
-        # client port instead. JetStream is enabled by the adapter, which
-        # creates its own stream on connect.
-        options: >-
-          --health-cmd "wget -q -O- http://localhost:8222/healthz || nc -z localhost 4222"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
-
     env:
       VEYA_TEST_DSN: postgres://veya:veya@localhost:5433/veya?sslmode=disable
       VEYA_TEST_NATS_URL: nats://127.0.0.1:4222
@@ -192,6 +177,21 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: start nats (jetstream)
+        run: |
+          docker run -d --name veya-nats \
+            -p 4222:4222 -p 8222:8222 \
+            nats:2-alpine -js -m 8222
+          for _ in $(seq 1 30); do
+            if wget -q -O- http://127.0.0.1:8222/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "nats did not become healthy"
+          docker logs veya-nats
+          exit 1
 
       - name: apply migrations
         run: go run ./cmd/veya migrate --dsn "$VEYA_TEST_DSN"
@@ -206,3 +206,7 @@ jobs:
 
       - name: the demo, over JetStream
         run: go run ./cmd/veya-runtime --dsn "$VEYA_TEST_DSN" --dispatch jetstream --nats "$VEYA_TEST_NATS_URL" --demo
+
+      - name: stop nats
+        if: always()
+        run: docker rm -f veya-nats
