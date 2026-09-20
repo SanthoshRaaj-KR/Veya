@@ -8,6 +8,9 @@ type WaitKind string
 const (
 	// WaitTimer is a run sleeping until a wall-clock instant.
 	WaitTimer WaitKind = "TIMER"
+
+	// WaitSignal is a run waiting for something outside the system.
+	WaitSignal WaitKind = "SIGNAL"
 )
 
 // Wait is one suspension, read back out of history.
@@ -16,8 +19,12 @@ type Wait struct {
 	StepID StepID
 
 	// Until is when the wait may end on its own: the wake instant for a
-	// timer. Indefinite when nothing is scheduled.
+	// timer, the deadline for a signal. Indefinite when nothing is scheduled,
+	// which is the normal case for a signal and impossible for a timer.
 	Until time.Time
+
+	// Signal is the name being waited for. Empty for a timer.
+	Signal string
 }
 
 // PendingWait returns the run's unresolved suspension, if it has one.
@@ -52,7 +59,18 @@ func PendingWait(history []Event) (Wait, bool) {
 			}
 			open, waiting = Wait{Kind: WaitTimer, StepID: e.StepID, Until: data.WakeAt}, true
 
-		case EventTimerFired:
+		case EventSignalWaitStarted:
+			w := Wait{Kind: WaitSignal, StepID: e.StepID, Until: Indefinite}
+			var data SignalWaitStartedData
+			if err := e.Decode(&data); err == nil {
+				w.Signal = data.Name
+				if !data.Deadline.IsZero() {
+					w.Until = data.Deadline
+				}
+			}
+			open, waiting = w, true
+
+		case EventTimerFired, EventSignalReceived, EventSignalWaitTimedOut:
 			if waiting && e.StepID == open.StepID {
 				waiting = false
 			}
@@ -61,11 +79,32 @@ func PendingWait(history []Event) (Wait, bool) {
 	return open, waiting
 }
 
+// ConsumedSignals returns the ids of every signal this run has already taken.
+//
+// History is the record of what has been consumed. A `consumed` column on the
+// row would be a second copy of the same fact and free to disagree with it,
+// and a run whose history says it took a signal the table calls unconsumed is
+// a run that takes it twice on the next replay.
+func ConsumedSignals(history []Event) map[SignalID]bool {
+	taken := map[SignalID]bool{}
+	for _, e := range history {
+		if e.Type != EventSignalReceived {
+			continue
+		}
+		var data SignalReceivedData
+		if err := e.Decode(&data); err != nil {
+			continue
+		}
+		taken[data.SignalID] = true
+	}
+	return taken
+}
+
 // Elapsed reports whether a wait may end of its own accord by now.
 //
 // Inclusive, so a wait due at exactly now is over. The same boundary as
 // Run.IsWaiting, and for the same reason: a wake-up in the past is ready, not
-// late.
+// late. An indefinite wait never elapses; only an arrival ends it.
 func (w Wait) Elapsed(now time.Time) bool {
 	return !w.Until.After(now)
 }

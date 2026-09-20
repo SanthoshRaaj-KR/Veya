@@ -49,6 +49,18 @@ const (
 	// time becomes a fact in history rather than an observation.
 	EventTimerSet   EventType = "TIMER_SET"
 	EventTimerFired EventType = "TIMER_FIRED"
+
+	// EventSignalWaitStarted records that a run parked waiting for a named
+	// signal, and one of the two below records how the wait ended.
+	//
+	// SIGNAL_RECEIVED carries the signal id, which is what makes a signal
+	// consumed exactly once. A wait looks for a stored signal whose id is
+	// not already in history, so history is the record of what has been
+	// taken -- rather than a consumed flag on the row, which would be a
+	// second copy of the same fact and free to disagree with it.
+	EventSignalWaitStarted  EventType = "SIGNAL_WAIT_STARTED"
+	EventSignalReceived     EventType = "SIGNAL_RECEIVED"
+	EventSignalWaitTimedOut EventType = "SIGNAL_WAIT_TIMED_OUT"
 )
 
 // PayloadVersion is the schema version stamped on every event body written by
@@ -171,6 +183,24 @@ type (
 
 	TimerFiredData struct {
 		WakeAt time.Time `json:"wake_at"`
+	}
+
+	SignalWaitStartedData struct {
+		Name string `json:"name"`
+		// Deadline is the zero time when the wait has none. Recorded so a
+		// replay of this step reads the bound the engine actually applied.
+		Deadline time.Time `json:"deadline,omitempty"`
+	}
+
+	SignalReceivedData struct {
+		Name     string          `json:"name"`
+		SignalID SignalID        `json:"signal_id"`
+		Payload  json.RawMessage `json:"payload,omitempty"`
+	}
+
+	SignalWaitTimedOutData struct {
+		Name     string    `json:"name"`
+		Deadline time.Time `json:"deadline"`
 	}
 
 	LeaseExpiredData struct {

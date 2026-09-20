@@ -239,6 +239,35 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 		return e.park(ctx, run, decision.WakeAt, core.EventTimerSet, decision.StepID,
 			core.TimerSetData{WakeAt: decision.WakeAt})
 
+	case core.DecideWaitForSignal:
+		// Park at the deadline, or indefinitely when there is none. The
+		// signal itself is not looked for here: resume does that on the way
+		// in, and it will do it again the instant a delivery un-parks the
+		// run. Checking in both places would be two chances to disagree
+		// about what counts as already consumed.
+		until := decision.Signal.Deadline
+		if until.IsZero() {
+			until = core.Indefinite
+		}
+		if err := e.park(ctx, run, until, core.EventSignalWaitStarted, decision.StepID,
+			core.SignalWaitStartedData{
+				Name:     decision.Signal.Name,
+				Deadline: decision.Signal.Deadline,
+			}); err != nil {
+			return err
+		}
+
+		// Then look immediately, because an arrival that beat the run here is
+		// already stored and nothing is going to un-park the run for it: the
+		// release happens on arrival, and arrival already happened. Parking
+		// and waiting to be woken would be the early-signal bug moved one
+		// level up -- a run asleep forever on something that has occurred.
+		//
+		// Advance rather than a check here, so the stored signal is consumed
+		// by exactly the code that consumes a late one. Each pass takes one
+		// signal, so this ends.
+		return e.Advance(ctx, run.ID)
+
 	case core.DecideComplete:
 		return e.finish(ctx, run, core.RunState{
 			Status: core.RunCompleted,
@@ -338,11 +367,12 @@ func (e *Engine) finish(ctx context.Context, run core.Run, next core.RunState, e
 // resume releases a parked run whose wait is over, and reports whether the run
 // is ready to be asked for a decision.
 //
-// It runs before the decider on every advance, and it is what turns the
-// passage of time into a fact. The agent body cannot look at a clock -- an
-// answer that changes between replays diverges the step after the one that
-// read it -- so the engine records that the wait ended, and the body reads
-// that record back like any other history.
+// It runs before the decider on every advance, and it is what turns an event
+// in the outside world into a fact in history. The agent body cannot look at a
+// clock, and cannot query the signals table: an answer that changes between
+// replays diverges the step after the one that read it. So the engine looks
+// once, records what it found, and the body reads that record back like any
+// other history.
 //
 // A run whose wait is still running comes back not ready, and Advance stops
 // without asking anyone anything.
@@ -352,18 +382,30 @@ func (e *Engine) resume(ctx context.Context, run core.Run, history []core.Event)
 		return run, history, true, nil
 	}
 
-	now := e.clock.Now()
-	if !wait.Elapsed(now) {
+	evt, data, over, err := e.waitIsOver(ctx, run, history, wait)
+	if err != nil {
+		return run, history, false, err
+	}
+	if !over {
 		e.log.Debug("run is still waiting",
 			"run_id", run.ID, "step_id", wait.StepID, "kind", wait.Kind, "until", wait.Until)
+		// Something released the run without satisfying its wait -- a signal
+		// under a different name, most often. Re-park it, or the scan will
+		// pick it up on every pass and ask a decider that can only answer
+		// "still waiting".
+		if run.AvailableAt == nil {
+			if err := e.repark(ctx, run, wait); err != nil {
+				return run, history, false, err
+			}
+		}
 		return run, history, false, nil
 	}
 
-	err := e.store.RunInTx(ctx, func(ctx context.Context, tx core.Tx) error {
+	err = e.store.RunInTx(ctx, func(ctx context.Context, tx core.Tx) error {
 		// Clearing the park and recording why it ended is one transaction.
 		// Split, a crash between them leaves either a released run whose
-		// history says it is still asleep, or a run marked asleep that
-		// history says woke -- and both are a run that never resumes.
+		// history says it is still waiting, or a run marked waiting that
+		// history says resumed -- and both are a run that never resumes.
 		if err := tx.AdvanceRun(ctx, run.ID, run.Version, core.RunState{
 			Status:      core.RunRunning,
 			Output:      run.Output,
@@ -371,8 +413,7 @@ func (e *Engine) resume(ctx context.Context, run core.Run, history []core.Event)
 		}); err != nil {
 			return err
 		}
-		return core.Append(ctx, tx, run.ID, core.EventTimerFired, wait.StepID,
-			core.TimerFiredData{WakeAt: wait.Until})
+		return core.Append(ctx, tx, run.ID, evt, wait.StepID, data)
 	})
 	if errors.Is(err, core.ErrConflict) {
 		// Another process released it first. Nothing to do, and nothing wrong:
@@ -383,7 +424,8 @@ func (e *Engine) resume(ctx context.Context, run core.Run, history []core.Event)
 		return run, history, false, fmt.Errorf("resume %s: %w", run.ID, err)
 	}
 
-	e.log.Info("run resumed", "run_id", run.ID, "step_id", wait.StepID, "waited_for", wait.Kind)
+	e.log.Info("run resumed", "run_id", run.ID, "step_id", wait.StepID,
+		"waited_for", wait.Kind, "because", evt)
 
 	// Re-read both, because the decider is entitled to a history that includes
 	// the wake-up it is about to be asked to replay past.
@@ -396,6 +438,61 @@ func (e *Engine) resume(ctx context.Context, run core.Run, history []core.Event)
 		return run, history, false, fmt.Errorf("resume %s: %w", run.ID, err)
 	}
 	return run, history, true, nil
+}
+
+// waitIsOver decides whether a suspension has ended, and what history should
+// record about how.
+//
+// It is the only place that reads the outside world on a waiting run's behalf,
+// which is why it returns an event rather than a boolean: what ended the wait
+// has to become a durable fact, or the body cannot tell on replay whether its
+// approval arrived or its deadline passed.
+func (e *Engine) waitIsOver(ctx context.Context, run core.Run, history []core.Event,
+	wait core.Wait) (core.EventType, any, bool, error) {
+
+	now := e.clock.Now()
+
+	switch wait.Kind {
+	case core.WaitTimer:
+		if !wait.Elapsed(now) {
+			return "", nil, false, nil
+		}
+		return core.EventTimerFired, core.TimerFiredData{WakeAt: wait.Until}, true, nil
+
+	case core.WaitSignal:
+		// The read that replaces a delivery. A signal that arrived before the
+		// run got here is already stored, so this finds it on the first pass
+		// and the early-signal race has nowhere to happen.
+		sig, found, err := e.unconsumedSignal(ctx, run.ID, history, wait)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if found {
+			return core.EventSignalReceived, core.SignalReceivedData{
+				Name:     sig.Name,
+				SignalID: sig.ID,
+				Payload:  sig.Payload,
+			}, true, nil
+		}
+		if wait.Elapsed(now) {
+			// The deadline passed with nothing to read. Recorded rather than
+			// silently resumed, because the body has to be able to tell a
+			// signal that arrived from one that never did -- and it cannot
+			// look at a clock to work it out for itself.
+			return core.EventSignalWaitTimedOut, core.SignalWaitTimedOutData{
+				Name:     wait.Signal,
+				Deadline: wait.Until,
+			}, true, nil
+		}
+		return "", nil, false, nil
+
+	default:
+		// A wait kind this build does not understand keeps the run parked.
+		// Visibly stuck beats resumed on a suspension nobody could read.
+		e.log.Error("run is parked on a wait this build does not understand",
+			"run_id", run.ID, "step_id", wait.StepID, "kind", wait.Kind)
+		return "", nil, false, nil
+	}
 }
 
 // park suspends a run until an instant, recording what it is waiting for.
@@ -428,6 +525,34 @@ func (e *Engine) park(ctx context.Context, run core.Run, until time.Time,
 
 	e.log.Info("run parked", "run_id", run.ID, "step_id", step,
 		"until", until, "indefinite", core.IsIndefinite(until))
+	return nil
+}
+
+// repark puts a run back to sleep on a wait it is already serving.
+//
+// It records nothing. The wait is already in history; appending a second
+// SIGNAL_WAIT_STARTED for the same step would make the log say the run waited
+// twice, and would leave PendingWait reading a suspension that never closes
+// because only one of the two ever gets a matching resolution.
+//
+// It exists because a release is not a satisfaction: a signal under a
+// different name un-parks the run, the wait it is serving is untouched, and
+// without this the scan would pick the run up on every pass forever.
+func (e *Engine) repark(ctx context.Context, run core.Run, wait core.Wait) error {
+	until := wait.Until
+	err := e.store.RunInTx(ctx, func(ctx context.Context, tx core.Tx) error {
+		return tx.AdvanceRun(ctx, run.ID, run.Version, core.RunState{
+			Status:      core.RunRunning,
+			Output:      run.Output,
+			AvailableAt: &until,
+		})
+	})
+	if errors.Is(err, core.ErrConflict) {
+		return nil // someone else moved the run on; their view is the newer one
+	}
+	if err != nil {
+		return fmt.Errorf("repark %s: %w", run.ID, err)
+	}
 	return nil
 }
 
