@@ -6,7 +6,7 @@ The runtime keeps the guarantees; this package supplies the behaviour. See
 
 from __future__ import annotations
 
-from veya.agent import Agent, Context, Decision, DecisionKind, agent
+from veya.agent import Agent, Call, Context, Decision, DecisionKind, Join, Outcome, agent
 from veya.effects import Effect, EffectClass, Resolution, ResolutionKind, ToolCall
 from veya.errors import (
     Fail,
@@ -22,14 +22,17 @@ from veya.tools import Tool, ToolDeclarationError, tool
 
 __all__ = [
     "Agent",
+    "Call",
     "Context",
     "Decision",
     "DecisionKind",
     "Effect",
     "EffectClass",
     "Fail",
+    "Join",
     "NonDeterminismError",
     "NotExecuted",
+    "Outcome",
     "ProtocolError",
     "Resolution",
     "ResolutionKind",

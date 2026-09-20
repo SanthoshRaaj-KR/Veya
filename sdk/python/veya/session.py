@@ -22,7 +22,7 @@ from typing import Any
 
 import grpc
 
-from veya.agent import Agent, DecisionKind
+from veya.agent import Agent, DecisionKind, Join
 from veya.effects import Effect, EffectClass, ResolutionKind, ToolCall
 from veya.errors import NonDeterminismError, NotExecuted, ProtocolError, VeyaError
 from veya.history import Event, read
@@ -54,6 +54,13 @@ _DECISION = {
     DecisionKind.FAIL: pb.DECISION_KIND_FAIL,
     DecisionKind.SLEEP: pb.DECISION_KIND_SLEEP,
     DecisionKind.WAIT_FOR_SIGNAL: pb.DECISION_KIND_WAIT_FOR_SIGNAL,
+    DecisionKind.CALL_TOOL_PARALLEL: pb.DECISION_KIND_CALL_TOOL_PARALLEL,
+}
+
+_JOIN = {
+    Join.ALL: pb.JOIN_KIND_ALL,
+    Join.ANY: pb.JOIN_KIND_ANY,
+    Join.QUORUM: pb.JOIN_KIND_QUORUM,
 }
 
 # Reconnection backoff. A worker that reconnects instantly in a tight loop
@@ -299,6 +306,15 @@ class Worker:
                     output=_encode(decision.output),
                     error=decision.error,
                     wake_at_unix_nano=decision.wake_at_unix_nano,
+                    calls=[
+                        pb.ToolCall(tool=call.name, payload=_encode(call.payload))
+                        for call in decision.calls
+                    ],
+                    join=(
+                        pb.JoinPolicy(kind=_JOIN[decision.join], quorum=decision.quorum)
+                        if decision.calls
+                        else None
+                    ),
                     signal=(
                         pb.SignalWait(
                             name=decision.signal_name,

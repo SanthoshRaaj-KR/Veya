@@ -16,7 +16,7 @@ import enum
 import inspect
 import json
 import random as _random
-from collections.abc import Callable, Coroutine, Iterable
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,17 +25,99 @@ from veya.errors import Fail, NonDeterminismError, SignalTimeout, ToolFailed, Ve
 from veya.history import History, RecordedStep
 from veya.tools import Tool
 
-__all__ = ["Agent", "Context", "Decision", "DecisionKind", "agent"]
+__all__ = ["Agent", "Call", "Context", "Decision", "DecisionKind", "Join", "Outcome", "agent"]
 
 
 class DecisionKind(enum.Enum):
     """What the agent decided to do next."""
 
     CALL_TOOL = "CALL_TOOL"
+    CALL_TOOL_PARALLEL = "CALL_TOOL_PARALLEL"
     COMPLETE = "COMPLETE"
     FAIL = "FAIL"
     SLEEP = "SLEEP"
     WAIT_FOR_SIGNAL = "WAIT_FOR_SIGNAL"
+
+
+@dataclass(frozen=True, slots=True)
+class Call:
+    """One invocation inside a fan-out.
+
+    It carries no step id. The runtime numbers children ``parent.i`` from their
+    position in the list, so the naming rule has one definition rather than one
+    per caller -- and no author can hand two children the same idempotency key.
+
+        await ctx.call_parallel([Call(check_stock, sku=s) for s in skus])
+    """
+
+    tool: Tool | str
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def __init__(self, tool: Tool | str, **payload: Any) -> None:
+        object.__setattr__(self, "tool", tool)
+        object.__setattr__(self, "payload", payload)
+
+    @property
+    def name(self) -> str:
+        return self.tool.name if isinstance(self.tool, Tool) else self.tool
+
+
+class Join(enum.Enum):
+    """When a fan-out has finished waiting.
+
+    It never says what a partial failure *means*. Every outcome comes back to
+    the body, in invocation order, successes and failures alike, and the body
+    decides -- because whether three failures out of ten is a disaster or a
+    Tuesday is a question about the agent, not about the runtime.
+    """
+
+    ALL = "ALL"
+    """Wait for every child to settle, successfully or not."""
+
+    ANY = "ANY"
+    """Finish on the first success -- or when every child has failed, because
+    then no success is coming. A join satisfiable only by success hangs
+    forever on a bad day."""
+
+    QUORUM = "QUORUM"
+    """Finish at ``quorum`` successes, or as soon as too few children remain
+    for that to be possible. Use :meth:`of`."""
+
+    @staticmethod
+    def of(n: int) -> tuple[Join, int]:
+        """A quorum of n, for passing as ``join=Join.of(2)``."""
+        if n <= 0:
+            raise VeyaError("a quorum needs to be a positive number of successes")
+        return (Join.QUORUM, n)
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """What became of one call in a fan-out.
+
+    ``settled`` is false for a child that is still running, which only happens
+    under ANY and QUORUM -- those finish while siblings are in flight, and the
+    siblings are not cancelled, so their results simply are not in yet.
+    """
+
+    index: int
+    tool: str
+    settled: bool = False
+    ok: bool = False
+    result: Any = None
+    error: str = ""
+
+    def unwrap(self) -> Any:
+        """The result, or ToolFailed if this child failed.
+
+        For the common case where a body wants the successes and would rather
+        raise than branch.
+        """
+        if not self.settled:
+            raise VeyaError(f"child {self.index} ({self.tool}) has not settled")
+        if not self.ok:
+            raise ToolFailed(str(self.index), self.tool, self.error)
+        return self.result
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +142,12 @@ class Decision:
     # Set when kind is WAIT_FOR_SIGNAL. A zero deadline waits indefinitely.
     signal_name: str = ""
     signal_deadline_unix_nano: int = 0
+
+    # Set when kind is CALL_TOOL_PARALLEL. Order is invocation order and is
+    # load-bearing: children are named from their position here.
+    calls: tuple[Call, ...] = ()
+    join: Join = Join.ALL
+    quorum: int = 0
 
 
 class _Suspend(Exception):
@@ -164,6 +252,97 @@ class Context:
             raise _Suspend(step_id, name, payload)
 
         return recorded.result
+
+    async def call_parallel(
+        self,
+        calls: Sequence[Call],
+        *,
+        join: Join | tuple[Join, int] = Join.ALL,
+    ) -> list[Outcome]:
+        """Perform several tool calls at once and join them.
+
+        Returns one :class:`Outcome` per call, **in the order the calls were
+        given**, whatever order they finished in. Completion order is not
+        reproducible, so a result list that followed it would disagree with
+        itself on the next replay -- and every payload derived from it would
+        diverge.
+
+            outcomes = await ctx.call_parallel(
+                [Call(check_stock, sku=sku) for sku in skus],
+                join=Join.ALL,
+            )
+            in_stock = [o.result for o in outcomes if o.ok]
+
+        Failures come back as outcomes rather than exceptions. Whether three
+        failures out of ten is a disaster or a Tuesday is a question about this
+        agent, so it is asked here rather than answered by the runtime. Call
+        :meth:`Outcome.unwrap` if raising is what you want.
+
+        A fan-out cannot also sleep or wait in the same turn. Join first, then
+        suspend on the next decision -- one more round trip, and a history that
+        reads in the order things happened.
+        """
+        quorum = 0
+        if isinstance(join, tuple):
+            join, quorum = join
+        if not calls:
+            raise VeyaError("ctx.call_parallel needs at least one call")
+        if join is Join.QUORUM:
+            if quorum <= 0:
+                raise VeyaError("a QUORUM join needs Join.of(n); use join=Join.of(2)")
+            if quorum > len(calls):
+                raise VeyaError(
+                    f"a quorum of {quorum} over {len(calls)} calls can never be satisfied"
+                )
+
+        self._position += 1
+        parent = f"S{self._position}"
+
+        outcomes: list[Outcome] = []
+        for index, call in enumerate(calls):
+            name = call.name
+            if isinstance(call.tool, Tool) and name not in self._agent.tools:
+                raise VeyaError(
+                    f"agent {self._agent.name!r} called tool {name!r}, which it did not "
+                    f"register. Add it to the agent's tools= list, or the runtime will "
+                    f"have no worker to send it to."
+                )
+
+            child = f"{parent}.{index}"
+            recorded = self._history.step(child)
+            if recorded is None:
+                outcomes.append(Outcome(index=index, tool=name))
+                continue
+
+            _check_matches(child, recorded, name, call.payload)
+
+            if recorded.error:
+                outcomes.append(
+                    Outcome(index=index, tool=name, settled=True, ok=False, error=recorded.error)
+                )
+            elif recorded.completed:
+                outcomes.append(
+                    Outcome(index=index, tool=name, settled=True, ok=True, result=recorded.result)
+                )
+            else:
+                outcomes.append(Outcome(index=index, tool=name))
+
+        if _join_satisfied(join, quorum, outcomes):
+            return outcomes
+
+        # Not joined yet, so re-issue the identical fan-out. The runtime finds
+        # the children already exist, rolls the transaction back and does
+        # nothing -- which is the whole of how a fan-out waits, and needs no
+        # waiting state on either side of the wire.
+        raise _Wait(
+            Decision(
+                kind=DecisionKind.CALL_TOOL_PARALLEL,
+                step_id=parent,
+                calls=tuple(calls),
+                join=join,
+                quorum=quorum,
+            )
+        )
 
     # --- suspension -------------------------------------------------------
 
@@ -547,3 +726,23 @@ def _nanos_from_iso(value: str) -> int:
         return _to_nanos(_datetime.datetime.fromisoformat(value.replace("Z", "+00:00")))
     except ValueError:
         return 0
+
+
+def _join_satisfied(join: Join, quorum: int, outcomes: list[Outcome]) -> bool:
+    """Whether a fan-out has finished waiting.
+
+    The second exit in each case is the one that gets forgotten, and leaving it
+    out is how a run hangs forever on a bad day.
+    """
+    total = len(outcomes)
+    succeeded = sum(1 for o in outcomes if o.settled and o.ok)
+    failed = sum(1 for o in outcomes if o.settled and not o.ok)
+    settled = succeeded + failed
+
+    if join is Join.ALL:
+        return settled == total
+    if join is Join.ANY:
+        return succeeded > 0 or failed == total
+    # QUORUM: enough successes, or too few children left for enough to be
+    # possible.
+    return succeeded >= quorum or total - failed < quorum
