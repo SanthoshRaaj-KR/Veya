@@ -167,10 +167,12 @@ message DecideResult {
 message Decision {
   DecisionKind kind = 1;
 
-  // Set when kind is CALL_TOOL. StepId is a run-relative logical position
-  // assigned by invocation order, never completion order — it is what the
-  // idempotency key is derived from, so it has to survive retries,
-  // reassignment and replay.
+  // Set when kind is CALL_TOOL, and when kind is CALL_TOOL_PARALLEL — where
+  // it is the *parent* step, and the children are numbered from it.
+  //
+  // StepId is a run-relative logical position assigned by invocation order,
+  // never completion order — it is what the idempotency key is derived from,
+  // so it has to survive retries, reassignment and replay.
   string step_id = 2;
   string tool = 3;
   bytes payload = 4;
@@ -180,13 +182,104 @@ message Decision {
 
   // Set when kind is FAIL.
   string error = 6;
+
+  // Set when kind is CALL_TOOL_PARALLEL.
+  //
+  // Repeated ToolCall inside one Decision, rather than repeated Decision.
+  // The other encoding is the obvious one and it permits nonsense: a sleep
+  // and a cancel in the same batch, two completes, a complete followed by a
+  // call. Every one of those would have to be rejected at runtime, in Go,
+  // with an error message the Python SDK then has to take care never to
+  // provoke. This shape makes them unrepresentable instead.
+  //
+  // Order is invocation order and is load-bearing: children are named from
+  // their position here. See docs/execution-model.md section 7.1.
+  repeated ToolCall calls = 7;
+  JoinPolicy join = 8;
+
+  // Set when kind is SLEEP: the instant to wake at.
+  int64 wake_at_unix_nano = 9;
+
+  // Set when kind is WAIT_FOR_SIGNAL.
+  SignalWait signal = 10;
 }
 
+// ToolCall is one invocation inside a parallel decision.
+//
+// It carries no step id. The runtime numbers children parent.Child(i) from
+// their position in the calls list, so the naming rule has one definition
+// rather than one per client — and a client cannot accidentally give two
+// children the same key.
+message ToolCall {
+  string tool = 1;
+  bytes payload = 2;
+}
+
+// JoinPolicy states when a fan-out has finished waiting.
+//
+// It never states what a partial failure *means*. Every outcome goes back to
+// the agent body in invocation order, successes and failures alike, and the
+// body decides — the runtime knows about effects and nothing about meaning.
+message JoinPolicy {
+  JoinKind kind = 1;
+
+  // Quorum is how many successes JOIN_KIND_QUORUM needs. Ignored otherwise.
+  // A quorum larger than the fan-out is refused: it is unsatisfiable from the
+  // first instant, so it would park the run forever with nothing in the logs
+  // pointing at the cause.
+  int32 quorum = 2;
+}
+
+enum JoinKind {
+  JOIN_KIND_UNSPECIFIED = 0;
+
+  // Wait for every child to reach a terminal state, successful or not.
+  JOIN_KIND_ALL = 1;
+
+  // Complete as soon as one child succeeds — or when every child has failed,
+  // which is the exit that gets forgotten. A join satisfiable only by success
+  // hangs forever on a bad day.
+  JOIN_KIND_ANY = 2;
+
+  // Complete at `quorum` successes, or as soon as too few children remain for
+  // that to be possible.
+  JOIN_KIND_QUORUM = 3;
+}
+
+// SignalWait is a run asking to be woken when something outside the system
+// happens.
+//
+// The wait is a read, not a delivery. A signal that arrived before the run got
+// here is already stored, so early and late arrival run identical code and the
+// early-signal race does not exist — see docs/execution-model.md section 4.
+message SignalWait {
+  string name = 1;
+
+  // DeadlineUnixNano bounds the wait. Zero waits indefinitely, which is
+  // honest for a human approval and dangerous for anything automated.
+  int64 deadline_unix_nano = 2;
+}
+
+// DecisionKind is what the agent decided to do next.
+//
+// The whole Layer 5 surface is added here at once, including CANCEL and
+// COMPENSATE, which the runtime does not implement yet and refuses as
+// "not one this build knows". Adding an enum value later is free; renumbering
+// one never is, and this contract is public from its first commit.
 enum DecisionKind {
   DECISION_KIND_UNSPECIFIED = 0;
   DECISION_KIND_CALL_TOOL = 1;
   DECISION_KIND_COMPLETE = 2;
   DECISION_KIND_FAIL = 3;
+
+  DECISION_KIND_CALL_TOOL_PARALLEL = 4;
+  DECISION_KIND_SLEEP = 5;
+  DECISION_KIND_WAIT_FOR_SIGNAL = 6;
+
+  // Reserved for Layer 6. Named now so the numbering is settled; a runtime
+  // that meets one refuses it rather than misreading it as something else.
+  DECISION_KIND_CANCEL = 7;
+  DECISION_KIND_COMPENSATE = 8;
 }
 
 // Run is the durable state of one agent execution.
