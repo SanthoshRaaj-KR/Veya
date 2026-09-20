@@ -204,6 +204,78 @@ func TestDecisionRequiresWhatItsKindNeeds(t *testing.T) {
 			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_CALL_TOOL, Tool: "send"},
 			"no step id",
 		},
+		{
+			"cancel, which this build does not implement",
+			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_CANCEL},
+			"not one this build knows",
+		},
+		{
+			"compensate, likewise",
+			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_COMPENSATE},
+			"not one this build knows",
+		},
+		{
+			"fan-out with no calls",
+			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL, StepId: "S1"},
+			"makes no calls",
+		},
+		{
+			"fan-out with no parent step",
+			&pb.Decision{
+				Kind:  pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL,
+				Calls: []*pb.ToolCall{{Tool: "check"}},
+			},
+			"no parent step id",
+		},
+		{
+			"fan-out with a nameless call",
+			&pb.Decision{
+				Kind:   pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL,
+				StepId: "S1",
+				Calls:  []*pb.ToolCall{{Tool: "check"}, {}},
+				Join:   &pb.JoinPolicy{Kind: pb.JoinKind_JOIN_KIND_ALL},
+			},
+			"call 1 names no tool",
+		},
+		{
+			"fan-out with no join policy",
+			&pb.Decision{
+				Kind:   pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL,
+				StepId: "S1",
+				Calls:  []*pb.ToolCall{{Tool: "check"}},
+			},
+			"no join policy",
+		},
+		{
+			"fan-out with an unspecified join kind",
+			&pb.Decision{
+				Kind:   pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL,
+				StepId: "S1",
+				Calls:  []*pb.ToolCall{{Tool: "check"}},
+				Join:   &pb.JoinPolicy{},
+			},
+			"not one this build knows",
+		},
+		{
+			"quorum bigger than the fan-out",
+			&pb.Decision{
+				Kind:   pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL,
+				StepId: "S1",
+				Calls:  []*pb.ToolCall{{Tool: "check"}, {Tool: "check"}},
+				Join:   &pb.JoinPolicy{Kind: pb.JoinKind_JOIN_KIND_QUORUM, Quorum: 3},
+			},
+			"can never be satisfied",
+		},
+		{
+			"sleep with no instant",
+			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_SLEEP, StepId: "S1"},
+			"names no instant",
+		},
+		{
+			"wait with no signal name",
+			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_WAIT_FOR_SIGNAL, StepId: "S1"},
+			"names no signal",
+		},
 	}
 
 	for _, tc := range tests {
@@ -333,5 +405,87 @@ func TestExecuteRequestCarriesTheKey(t *testing.T) {
 	}
 	if got.GetAttempt() != 2 || got.GetTool() != "send_summary" || got.GetCallId() != "c-1" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// TestAFanOutKeepsInvocationOrder. Order in the calls list is what the
+// children are named by, so a conversion that reordered them would hand the
+// same logical call a different idempotency key on the next replay.
+func TestAFanOutKeepsInvocationOrder(t *testing.T) {
+	got, err := wire.Decision(&pb.Decision{
+		Kind:   pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL,
+		StepId: "S3",
+		Calls: []*pb.ToolCall{
+			{Tool: "check_stock", Payload: []byte(`{"sku":"a"}`)},
+			{Tool: "check_price", Payload: []byte(`{"sku":"b"}`)},
+			{Tool: "check_stock", Payload: []byte(`{"sku":"c"}`)},
+		},
+		Join: &pb.JoinPolicy{Kind: pb.JoinKind_JOIN_KIND_QUORUM, Quorum: 2},
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+
+	if got.Kind != core.DecideCallToolParallel {
+		t.Fatalf("Kind = %s, want %s", got.Kind, core.DecideCallToolParallel)
+	}
+	if got.StepID != core.Step(3) {
+		t.Fatalf("StepID = %s, want the parent step S3", got.StepID)
+	}
+	if got.Join.Kind != core.JoinQuorum || got.Join.Quorum != 2 {
+		t.Fatalf("Join = %s, want QUORUM(2)", got.Join)
+	}
+
+	want := []string{"check_stock", "check_price", "check_stock"}
+	if len(got.Calls) != len(want) {
+		t.Fatalf("got %d calls, want %d", len(got.Calls), len(want))
+	}
+	for i, tool := range want {
+		if got.Calls[i].TaskType != tool {
+			t.Fatalf("call %d is %q, want %q; invocation order is what children are named by",
+				i, got.Calls[i].TaskType, tool)
+		}
+	}
+}
+
+// TestASleepCarriesAnInstantAndAStep. Both halves are needed: the instant is
+// when to wake, and the step is what history records the wait against.
+func TestASleepCarriesAnInstantAndAStep(t *testing.T) {
+	wake := time.Date(2026, time.September, 21, 9, 0, 0, 0, time.UTC)
+
+	got, err := wire.Decision(&pb.Decision{
+		Kind:           pb.DecisionKind_DECISION_KIND_SLEEP,
+		StepId:         "S4",
+		WakeAtUnixNano: wake.UnixNano(),
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if got.Kind != core.DecideSleep || got.StepID != core.Step(4) {
+		t.Fatalf("got %+v", got)
+	}
+	if !got.WakeAt.Equal(wake) {
+		t.Fatalf("WakeAt = %s, want %s", got.WakeAt, wake)
+	}
+}
+
+// TestAnUnsetSignalDeadlineWaitsIndefinitely. Zero is honoured rather than
+// refused: waiting forever for a human approval is the case this exists for,
+// and a run that resumed early on a deadline nobody asked for is worse than
+// one that is visibly still waiting.
+func TestAnUnsetSignalDeadlineWaitsIndefinitely(t *testing.T) {
+	got, err := wire.Decision(&pb.Decision{
+		Kind:   pb.DecisionKind_DECISION_KIND_WAIT_FOR_SIGNAL,
+		StepId: "S5",
+		Signal: &pb.SignalWait{Name: "approval"},
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if got.Kind != core.DecideWaitForSignal || got.Signal.Name != "approval" {
+		t.Fatalf("got %+v", got)
+	}
+	if !got.Signal.Deadline.IsZero() {
+		t.Fatalf("Deadline = %s, want the zero time to mean no deadline", got.Signal.Deadline)
 	}
 }

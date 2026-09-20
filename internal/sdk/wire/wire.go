@@ -209,6 +209,30 @@ func Decision(d *pb.Decision) (core.Decision, error) {
 			Payload:  d.GetPayload(),
 		}, nil
 
+	case pb.DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL:
+		return parallel(d)
+
+	case pb.DecisionKind_DECISION_KIND_SLEEP:
+		// A sleep with no instant is a park with no wake-up, which is a run
+		// that never resumes. There is no sensible default to supply: an
+		// unset field could mean "now" or "forever" and both would be a
+		// guess about what the author meant.
+		if d.GetStepId() == "" {
+			return core.Decision{}, fmt.Errorf("%w: SLEEP has no step id", ErrProtocol)
+		}
+		if d.GetWakeAtUnixNano() <= 0 {
+			return core.Decision{}, fmt.Errorf("%w: SLEEP at step %s names no instant to wake at",
+				ErrProtocol, d.GetStepId())
+		}
+		return core.Decision{
+			Kind:   core.DecideSleep,
+			StepID: core.StepID(d.GetStepId()),
+			WakeAt: time.Unix(0, d.GetWakeAtUnixNano()).UTC(),
+		}, nil
+
+	case pb.DecisionKind_DECISION_KIND_WAIT_FOR_SIGNAL:
+		return waitForSignal(d)
+
 	case pb.DecisionKind_DECISION_KIND_COMPLETE:
 		return core.Decision{Kind: core.DecideComplete, Output: d.GetOutput()}, nil
 
@@ -222,9 +246,109 @@ func Decision(d *pb.Decision) (core.Decision, error) {
 		return core.Decision{Kind: core.DecideFail, Error: reason}, nil
 
 	default:
+		// Includes CANCEL and COMPENSATE, which the .proto names so that
+		// Layer 6 does not have to renumber, and which this build has no
+		// machinery for. Refusing them by name beats accepting them into a
+		// switch that would silently fall through to doing nothing.
 		return core.Decision{}, fmt.Errorf("%w: decision kind %q is not one this build knows",
 			ErrProtocol, d.GetKind().String())
 	}
+}
+
+// parallel converts a fan-out, checking the things that would otherwise park a
+// run forever with nothing in the logs to explain it.
+func parallel(d *pb.Decision) (core.Decision, error) {
+	if d.GetStepId() == "" {
+		return core.Decision{}, fmt.Errorf("%w: CALL_TOOL_PARALLEL has no parent step id",
+			ErrProtocol)
+	}
+	if len(d.GetCalls()) == 0 {
+		// Not a harmless empty batch. Every join policy over zero children is
+		// either trivially satisfied or never satisfiable, and both readings
+		// are a guess about a body that meant something else.
+		return core.Decision{}, fmt.Errorf("%w: CALL_TOOL_PARALLEL at step %s makes no calls",
+			ErrProtocol, d.GetStepId())
+	}
+
+	calls := make([]core.Call, len(d.GetCalls()))
+	for i, c := range d.GetCalls() {
+		if c.GetTool() == "" {
+			return core.Decision{}, fmt.Errorf("%w: CALL_TOOL_PARALLEL at step %s: call %d names no tool",
+				ErrProtocol, d.GetStepId(), i)
+		}
+		calls[i] = core.Call{TaskType: c.GetTool(), Payload: c.GetPayload()}
+	}
+
+	join, err := joinPolicy(d.GetJoin())
+	if err != nil {
+		return core.Decision{}, fmt.Errorf("%w: CALL_TOOL_PARALLEL at step %s: %s",
+			ErrProtocol, d.GetStepId(), err)
+	}
+	if err := join.Valid(len(calls)); err != nil {
+		return core.Decision{}, fmt.Errorf("%w: CALL_TOOL_PARALLEL at step %s: %s",
+			ErrProtocol, d.GetStepId(), err)
+	}
+
+	return core.Decision{
+		Kind:   core.DecideCallToolParallel,
+		StepID: core.StepID(d.GetStepId()),
+		Calls:  calls,
+		Join:   join,
+	}, nil
+}
+
+// joinPolicy converts a join, refusing an unset one.
+//
+// This is the one place in the inward direction where neither default is the
+// pessimistic choice, so there is no pessimistic choice to make. Defaulting to
+// ALL makes a body that meant ANY wait for stragglers it had decided to
+// ignore; defaulting to ANY makes a body that meant ALL proceed on partial
+// results. Both are silent, and the difference is visible only in an incident.
+// A fan-out with no join policy is a fan-out nobody has said when to stop
+// waiting for, and saying so names the client that sent it.
+func joinPolicy(p *pb.JoinPolicy) (core.JoinPolicy, error) {
+	if p == nil {
+		return core.JoinPolicy{}, errors.New("no join policy")
+	}
+	switch p.GetKind() {
+	case pb.JoinKind_JOIN_KIND_ALL:
+		return core.JoinPolicy{Kind: core.JoinAll}, nil
+	case pb.JoinKind_JOIN_KIND_ANY:
+		return core.JoinPolicy{Kind: core.JoinAny}, nil
+	case pb.JoinKind_JOIN_KIND_QUORUM:
+		return core.JoinPolicy{Kind: core.JoinQuorum, Quorum: int(p.GetQuorum())}, nil
+	default:
+		return core.JoinPolicy{}, fmt.Errorf("join kind %q is not one this build knows",
+			p.GetKind().String())
+	}
+}
+
+// waitForSignal converts a signal wait.
+//
+// A zero deadline is honoured as "indefinitely" rather than refused. It is the
+// right thing for a human approval, which is the case this feature exists for,
+// and a run that waits forever for a signal nobody sends is at least visible
+// in `veya run show` — unlike a run that resumed early on a deadline the
+// author never asked for.
+func waitForSignal(d *pb.Decision) (core.Decision, error) {
+	if d.GetStepId() == "" {
+		return core.Decision{}, fmt.Errorf("%w: WAIT_FOR_SIGNAL has no step id", ErrProtocol)
+	}
+	sig := d.GetSignal()
+	if sig.GetName() == "" {
+		return core.Decision{}, fmt.Errorf("%w: WAIT_FOR_SIGNAL at step %s names no signal",
+			ErrProtocol, d.GetStepId())
+	}
+
+	wait := core.SignalWait{Name: sig.GetName()}
+	if ns := sig.GetDeadlineUnixNano(); ns > 0 {
+		wait.Deadline = time.Unix(0, ns).UTC()
+	}
+	return core.Decision{
+		Kind:   core.DecideWaitForSignal,
+		StepID: core.StepID(d.GetStepId()),
+		Signal: wait,
+	}, nil
 }
 
 // Resolution converts a reconcile hook's answer.
