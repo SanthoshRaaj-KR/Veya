@@ -61,6 +61,16 @@ const (
 	EventSignalWaitStarted  EventType = "SIGNAL_WAIT_STARTED"
 	EventSignalReceived     EventType = "SIGNAL_RECEIVED"
 	EventSignalWaitTimedOut EventType = "SIGNAL_WAIT_TIMED_OUT"
+
+	// EventFanOutStarted records that one decision became several tasks,
+	// and under what join policy.
+	//
+	// The TASK_CREATED events that follow already name the children, so this
+	// is not there to identify them. It is there for the policy, which is
+	// the one thing about a fan-out that history would otherwise not hold --
+	// and without it, reading a run back tells you ten calls were made and
+	// not whether the run was entitled to proceed after three.
+	EventFanOutStarted EventType = "FAN_OUT_STARTED"
 )
 
 // PayloadVersion is the schema version stamped on every event body written by
@@ -183,6 +193,15 @@ type (
 
 	TimerFiredData struct {
 		WakeAt time.Time `json:"wake_at"`
+	}
+
+	FanOutStartedData struct {
+		// Calls are the tools invoked, in invocation order. The index into
+		// this slice is the child's number, so the order is not a
+		// presentational detail: it is how a reader maps S3.2 back to the
+		// call that produced it.
+		Calls []string `json:"calls"`
+		Join  string   `json:"join"`
 	}
 
 	SignalWaitStartedData struct {

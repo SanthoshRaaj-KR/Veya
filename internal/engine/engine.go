@@ -231,6 +231,9 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 	case core.DecideCallTool:
 		return e.dispatch(ctx, run, decision)
 
+	case core.DecideCallToolParallel:
+		return e.dispatchParallel(ctx, run, decision)
+
 	case core.DecideSleep:
 		// Nothing holds this wake-up. There is no timer goroutine and no
 		// time.After owning state a restart would lose: the instant goes in
