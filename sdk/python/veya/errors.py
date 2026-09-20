@@ -12,6 +12,7 @@ __all__ = [
     "NonDeterminismError",
     "NotExecuted",
     "ProtocolError",
+    "SignalTimeout",
     "ToolFailed",
     "VeyaError",
 ]
@@ -110,3 +111,22 @@ class NonDeterminismError(VeyaError):
         self.step_id = step_id
         self.expected = expected
         self.actual = actual
+
+
+class SignalTimeout(VeyaError):
+    """A ``ctx.wait_for`` reached its deadline with nothing having arrived.
+
+    Raised at the step that waited, during replay, so an agent body handles it
+    where it happened -- exactly like ToolFailed. The distinction it draws is
+    the one an author needs: nothing arrived, as opposed to something arrived
+    and was unwelcome.
+
+    Catching it is the normal thing to do. A wait with a deadline and no
+    handler is a run that fails on a timeout its author chose, which is rarely
+    what they meant by choosing one.
+    """
+
+    def __init__(self, step_id: str, name: str) -> None:
+        super().__init__(f"step {step_id}: nothing arrived for signal {name!r} before its deadline")
+        self.step_id = step_id
+        self.name = name

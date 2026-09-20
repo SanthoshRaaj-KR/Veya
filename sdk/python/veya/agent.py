@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from veya.determinism import inspect_body
-from veya.errors import Fail, NonDeterminismError, ToolFailed, VeyaError
+from veya.errors import Fail, NonDeterminismError, SignalTimeout, ToolFailed, VeyaError
 from veya.history import History, RecordedStep
 from veya.tools import Tool
 
@@ -34,6 +34,8 @@ class DecisionKind(enum.Enum):
     CALL_TOOL = "CALL_TOOL"
     COMPLETE = "COMPLETE"
     FAIL = "FAIL"
+    SLEEP = "SLEEP"
+    WAIT_FOR_SIGNAL = "WAIT_FOR_SIGNAL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,17 @@ class Decision:
     payload: dict[str, Any] = field(default_factory=dict)
     output: Any = None
     error: str = ""
+
+    # Set when kind is SLEEP: the instant to wake at, in nanoseconds since the
+    # epoch. An absolute instant rather than a duration, because a duration
+    # would be measured from whenever the runtime happened to read the
+    # decision -- so a decision delayed in a queue would sleep longer than the
+    # body asked, by an amount nobody can reproduce.
+    wake_at_unix_nano: int = 0
+
+    # Set when kind is WAIT_FOR_SIGNAL. A zero deadline waits indefinitely.
+    signal_name: str = ""
+    signal_deadline_unix_nano: int = 0
 
 
 class _Suspend(Exception):
@@ -68,6 +81,24 @@ class _Suspend(Exception):
         self.step_id = step_id
         self.tool = tool
         self.payload = payload
+
+
+class _Wait(Exception):
+    """Raised by ``ctx.sleep`` and ``ctx.wait_for`` when the suspension they
+    describe has not finished yet.
+
+    The sibling of ``_Suspend``, and it unwinds the body for the same reason:
+    the body has reached a point it cannot honestly compute past. What differs
+    is that there is no task to wait on, so the runtime parks the run instead
+    of dispatching work.
+
+    An agent must never catch this. See ``_Suspend`` for why it inherits from
+    Exception rather than BaseException.
+    """
+
+    def __init__(self, decision: Decision) -> None:
+        super().__init__(f"step {decision.step_id} is waiting")
+        self.decision = decision
 
 
 class Context:
@@ -133,6 +164,118 @@ class Context:
             raise _Suspend(step_id, name, payload)
 
         return recorded.result
+
+    # --- suspension -------------------------------------------------------
+
+    async def sleep(
+        self,
+        duration: _datetime.timedelta | float | None = None,
+        *,
+        until: _datetime.datetime | None = None,
+    ) -> None:
+        """Park the run until an instant, durably.
+
+        Nothing is held anywhere while this waits. The instant goes in the
+        database and the runtime's ordinary scan is what notices it has
+        arrived, so a sleep survives a restart of everything -- the worker,
+        the runtime and the database -- with no timer to lose.
+
+        The wake-up is computed from :meth:`now`, which is the run's start
+        time and therefore the same on every replay. A wall clock here would
+        produce a different instant each time the body ran, and the step after
+        this one would diverge.
+
+        A day is an ordinary thing to pass. So is a month::
+
+            await ctx.sleep(timedelta(days=30))
+            await ctx.sleep(until=renewal_date)
+        """
+        if (duration is None) == (until is None):
+            raise VeyaError("ctx.sleep takes a duration or until=, and exactly one of them")
+
+        self._position += 1
+        step_id = f"S{self._position}"
+
+        recorded = self._history.wait(step_id)
+        if recorded is not None and recorded.resolved:
+            return  # the instant arrived; history says so
+        if recorded is not None:
+            # Still parked. Re-issue the suspension rather than recomputing it,
+            # so a re-decision cannot move a wake-up that is already durable.
+            raise _Wait(
+                Decision(
+                    kind=DecisionKind.SLEEP,
+                    step_id=step_id,
+                    wake_at_unix_nano=_nanos_from_iso(recorded.wake_at),
+                )
+            )
+
+        if until is None:
+            if isinstance(duration, _datetime.timedelta):
+                seconds = duration.total_seconds()
+            else:
+                seconds = float(duration or 0.0)
+            if seconds < 0:
+                raise VeyaError("ctx.sleep was given a negative duration")
+            until = self.now() + _datetime.timedelta(seconds=seconds)
+
+        raise _Wait(
+            Decision(
+                kind=DecisionKind.SLEEP,
+                step_id=step_id,
+                wake_at_unix_nano=_to_nanos(until),
+            )
+        )
+
+    async def wait_for(
+        self,
+        name: str,
+        *,
+        timeout: _datetime.timedelta | float | None = None,
+    ) -> Any:
+        """Park the run until a named signal arrives, and return its payload.
+
+        A signal that arrived *before* the body got here is already stored, and
+        this finds it on the first pass. There is no delivery to miss and no
+        race to lose: the runtime stores signals on arrival and this is a read.
+
+        Without ``timeout`` it waits indefinitely, which is the honest thing
+        for a human approval and a poor idea for anything automated -- a run
+        blocked on a signal nobody will ever send is invisible until somebody
+        goes looking. With one, :class:`veya.errors.SignalTimeout` is raised
+        at this step when the deadline passes with nothing having arrived.
+        """
+        if not name:
+            raise VeyaError("ctx.wait_for needs a signal name")
+
+        self._position += 1
+        step_id = f"S{self._position}"
+
+        recorded = self._history.wait(step_id)
+        if recorded is not None and recorded.resolved:
+            if recorded.timed_out:
+                raise SignalTimeout(step_id, recorded.name or name)
+            return recorded.payload
+
+        deadline_nanos = 0
+        if recorded is None and timeout is not None:
+            seconds = (
+                timeout.total_seconds()
+                if isinstance(timeout, _datetime.timedelta)
+                else float(timeout)
+            )
+            if seconds < 0:
+                raise VeyaError("ctx.wait_for was given a negative timeout")
+            deadline_nanos = _to_nanos(self.now() + _datetime.timedelta(seconds=seconds))
+
+        raise _Wait(
+            Decision(
+                kind=DecisionKind.WAIT_FOR_SIGNAL,
+                step_id=step_id,
+                signal_name=name,
+                signal_deadline_unix_nano=deadline_nanos,
+            )
+        )
 
     # --- replay-safe substitutes for things that would diverge ------------
 
@@ -215,6 +358,7 @@ class Agent:
         Every outcome of running the body maps to a decision:
 
         * it reached an unrecorded call  → CALL_TOOL
+        * it reached an unfinished wait  → SLEEP or WAIT_FOR_SIGNAL
         * it returned                    → COMPLETE
         * it raised ``Fail``             → FAIL, deliberately
         * it raised ``ToolFailed``       → FAIL, carrying the step that failed
@@ -234,6 +378,8 @@ class Agent:
                 tool=suspended.tool,
                 payload=suspended.payload,
             )
+        except _Wait as waiting:
+            return waiting.decision
         except Fail as deliberate:
             return Decision(
                 kind=DecisionKind.FAIL, error=str(deliberate) or "the agent failed the run"
@@ -378,3 +524,26 @@ def _canonical(payload: dict[str, Any]) -> str:
     divergence where the wire sees none.
     """
     return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _to_nanos(when: _datetime.datetime) -> int:
+    """An instant as nanoseconds since the epoch.
+
+    A naive datetime is read as UTC rather than as local time. Local time here
+    would make the same agent sleep for different lengths on machines in
+    different zones, which is the kind of difference that shows up once, in
+    production, at the end of a month.
+    """
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_datetime.timezone.utc)
+    return int(when.timestamp() * 1_000_000_000)
+
+
+def _nanos_from_iso(value: str) -> int:
+    """Parse the wake instant as history records it, tolerating a trailing Z."""
+    if not value:
+        return 0
+    try:
+        return _to_nanos(_datetime.datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return 0

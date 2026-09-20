@@ -21,7 +21,7 @@ from typing import Any
 
 from veya.errors import ProtocolError
 
-__all__ = ["Event", "History", "RecordedStep"]
+__all__ = ["Event", "History", "RecordedStep", "RecordedWait"]
 
 # The event payload envelope this build understands: {"v": 1, "data": {...}}.
 #
@@ -35,6 +35,12 @@ RUN_STARTED = "RUN_STARTED"
 TASK_CREATED = "TASK_CREATED"
 TASK_COMPLETED = "TASK_COMPLETED"
 TASK_FAILED = "TASK_FAILED"
+
+TIMER_SET = "TIMER_SET"
+TIMER_FIRED = "TIMER_FIRED"
+SIGNAL_WAIT_STARTED = "SIGNAL_WAIT_STARTED"
+SIGNAL_RECEIVED = "SIGNAL_RECEIVED"
+SIGNAL_WAIT_TIMED_OUT = "SIGNAL_WAIT_TIMED_OUT"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +103,28 @@ class RecordedStep:
         return f"{self.tool}({json.dumps(self.payload, sort_keys=True, default=str)})"
 
 
+@dataclass(frozen=True, slots=True)
+class RecordedWait:
+    """What history says about one suspension.
+
+    ``resolved`` is the field the body cannot work out for itself. An agent is
+    forbidden to read a clock -- an answer that changes between replays
+    diverges the step after the one that read it -- so it cannot tell a sleep
+    that is over from one still running, or a signal that arrived from one that
+    never did. The runtime observes once, records what it saw, and this is that
+    record.
+    """
+
+    step_id: str
+    kind: str  # "TIMER" or "SIGNAL"
+    name: str = ""
+    wake_at: str = ""
+    resolved: bool = False
+    timed_out: bool = False
+    signal_id: str = ""
+    payload: Any = None
+
+
 @dataclass(slots=True)
 class History:
     """A run's history, indexed by logical position."""
@@ -107,10 +135,15 @@ class History:
     run_input: dict[str, Any] = field(default_factory=dict)
     events: list[Event] = field(default_factory=list)
     steps: dict[str, RecordedStep] = field(default_factory=dict)
+    waits: dict[str, RecordedWait] = field(default_factory=dict)
 
     def step(self, step_id: str) -> RecordedStep | None:
         """What history records at this position, if anything."""
         return self.steps.get(step_id)
+
+    def wait(self, step_id: str) -> RecordedWait | None:
+        """What history records about a suspension at this position."""
+        return self.waits.get(step_id)
 
     def __len__(self) -> int:
         return len(self.events)
@@ -177,6 +210,43 @@ def read(
                     payload=existing.payload,
                     error=str(body.get("error", "the step failed")),
                 )
+
+        elif event.type == TIMER_SET:
+            body = event.data()
+            history.waits[event.step_id] = RecordedWait(
+                step_id=event.step_id,
+                kind="TIMER",
+                wake_at=str(body.get("wake_at", "")),
+            )
+
+        elif event.type == SIGNAL_WAIT_STARTED:
+            body = event.data()
+            history.waits[event.step_id] = RecordedWait(
+                step_id=event.step_id,
+                kind="SIGNAL",
+                name=str(body.get("name", "")),
+            )
+
+        elif event.type in (TIMER_FIRED, SIGNAL_RECEIVED, SIGNAL_WAIT_TIMED_OUT):
+            opened = history.waits.get(event.step_id)
+            if opened is None:
+                # A resolution with no wait before it cannot happen against a
+                # real store, where the runtime writes both. Saying so beats
+                # carrying on with a suspension whose terms are unknown.
+                raise ProtocolError(
+                    f"history records {event.type} for step {event.step_id} with no wait before it"
+                )
+            body = event.data()
+            history.waits[event.step_id] = RecordedWait(
+                step_id=opened.step_id,
+                kind=opened.kind,
+                name=opened.name or str(body.get("name", "")),
+                wake_at=opened.wake_at,
+                resolved=True,
+                timed_out=event.type == SIGNAL_WAIT_TIMED_OUT,
+                signal_id=str(body.get("signal_id", "")),
+                payload=_decode(body.get("payload")),
+            )
 
     return history
 

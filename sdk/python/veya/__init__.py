@@ -13,6 +13,7 @@ from veya.errors import (
     NonDeterminismError,
     NotExecuted,
     ProtocolError,
+    SignalTimeout,
     ToolFailed,
     VeyaError,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "ProtocolError",
     "Resolution",
     "ResolutionKind",
+    "SignalTimeout",
     "Tool",
     "ToolCall",
     "ToolDeclarationError",

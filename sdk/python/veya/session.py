@@ -52,6 +52,8 @@ _DECISION = {
     DecisionKind.CALL_TOOL: pb.DECISION_KIND_CALL_TOOL,
     DecisionKind.COMPLETE: pb.DECISION_KIND_COMPLETE,
     DecisionKind.FAIL: pb.DECISION_KIND_FAIL,
+    DecisionKind.SLEEP: pb.DECISION_KIND_SLEEP,
+    DecisionKind.WAIT_FOR_SIGNAL: pb.DECISION_KIND_WAIT_FOR_SIGNAL,
 }
 
 # Reconnection backoff. A worker that reconnects instantly in a tight loop
@@ -296,6 +298,15 @@ class Worker:
                     payload=_encode(decision.payload) if decision.tool else b"",
                     output=_encode(decision.output),
                     error=decision.error,
+                    wake_at_unix_nano=decision.wake_at_unix_nano,
+                    signal=(
+                        pb.SignalWait(
+                            name=decision.signal_name,
+                            deadline_unix_nano=decision.signal_deadline_unix_nano,
+                        )
+                        if decision.signal_name
+                        else None
+                    ),
                 ),
             )
         )
