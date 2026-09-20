@@ -231,6 +231,14 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 	case core.DecideCallTool:
 		return e.dispatch(ctx, run, decision)
 
+	case core.DecideSleep:
+		// Nothing holds this wake-up. There is no timer goroutine and no
+		// time.After owning state a restart would lose: the instant goes in
+		// the database, and the recovery scan -- which already looks for runs
+		// owed a decision -- is what notices it has arrived.
+		return e.park(ctx, run, decision.WakeAt, core.EventTimerSet, decision.StepID,
+			core.TimerSetData{WakeAt: decision.WakeAt})
+
 	case core.DecideComplete:
 		return e.finish(ctx, run, core.RunState{
 			Status: core.RunCompleted,
