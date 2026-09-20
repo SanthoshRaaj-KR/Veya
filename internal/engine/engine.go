@@ -204,6 +204,24 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 		return nil
 	}
 
+	// A fan-out whose join is not yet satisfiable has nothing new to say.
+	// Every child completing would otherwise cost a full round trip to the
+	// agent body, which would replay, find the join unmet, and re-issue the
+	// fan-out it already issued -- correct, and N-1 times more expensive
+	// than it needs to be when the body lives in another process.
+	//
+	// This can only skip work. The body stays the authority on what a join
+	// means: when the join is satisfied, or when this build cannot read the
+	// policy, the body is asked and its answer stands.
+	if pending, waiting := core.PendingFanOut(history); waiting {
+		succeeded, failed, settled := pending.Counts()
+		e.log.Debug("fan-out is still joining",
+			"run_id", run.ID, "step_id", pending.StepID, "join", pending.Join.String(),
+			"succeeded", succeeded, "failed", failed, "settled", settled,
+			"children", len(pending.Children))
+		return nil
+	}
+
 	decision, err := e.decider.Decide(ctx, run, history)
 	if errors.Is(err, core.ErrUnavailable) {
 		// Not the run's fault, and not permanent: no worker has connected yet,
