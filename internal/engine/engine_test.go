@@ -371,7 +371,19 @@ func newHarnessWithDispatcher(t *testing.T, d core.Decider, disp core.Dispatcher
 	// never lapse by accident, and a test that wants to simulate a dead worker
 	// says so explicitly rather than sleeping and hoping.
 	clk := clock.NewVirtual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	store := memory.New(clk)
+	return newHarnessOn(t, d, disp, clk, memory.New(clk))
+}
+
+// newHarnessOn builds a runtime over a store and clock that already exist.
+//
+// It is what makes a restart testable: the store is the database, so a test
+// that wants to simulate the process dying keeps the store, throws everything
+// above it away, and builds a second runtime on top. Anything that survives
+// that survived because it was durable, not because a goroutine remembered it.
+func newHarnessOn(t *testing.T, d core.Decider, disp core.Dispatcher,
+	clk *clock.Virtual, store core.Store) *harness {
+	t.Helper()
+
 	tools := tool.New()
 
 	// Tasks reach the dispatcher only through the outbox relay, so the harness
@@ -484,12 +496,19 @@ func (h *harness) spawn(t *testing.T, n int) {
 }
 
 func (h *harness) stop() {
+	h.crash()
+	_ = h.store.Close()
+}
+
+// crash stops everything above the store and leaves the store alone, which is
+// what a process dying looks like to a database.
+func (h *harness) crash() {
 	if h.cancel != nil {
 		h.cancel()
+		h.cancel = nil
 	}
 	_ = h.dispatcher.Close()
 	h.wg.Wait()
-	_ = h.store.Close()
 }
 
 // awaitTerminal polls until the run finishes or the test times out. Polling

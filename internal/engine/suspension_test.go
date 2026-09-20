@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
+	"github.com/SanthoshRaaj-KR/Veya/internal/dispatch/inproc"
 )
 
 // TestSleepParksARunInsteadOfAdvancingIt is the headline of the timer work.
@@ -211,4 +212,118 @@ func (h *harness) run(t *testing.T, id core.RunID) core.Run {
 		t.Fatalf("Run(%s): %v", id, err)
 	}
 	return run
+}
+
+// TestASleepingRunSurvivesARestart is the exit criterion for durable timers.
+//
+// The whole claim of a durable timer is that it is not a timer: nothing is
+// waiting in memory, so there is nothing for a process to take with it when it
+// dies. This test kills everything above the store while a run is a day into
+// its sleep, builds a second runtime on top of the same data, and expects the
+// run to wake on schedule under a runtime that has never heard of it.
+//
+// A pending wake-up held in a goroutine passes every test that does not do
+// this, and fails the first deploy.
+func TestASleepingRunSurvivesARestart(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wake := start.Add(24 * time.Hour)
+
+	agent := deciderFunc(func(_ core.Run, history []core.Event) (core.Decision, error) {
+		if !hasEvent(history, core.EventTimerFired) {
+			return core.Decision{Kind: core.DecideSleep, StepID: core.Step(1), WakeAt: wake}, nil
+		}
+		return core.Decision{Kind: core.DecideComplete, Output: json.RawMessage(`{"woke":true}`)}, nil
+	})
+
+	first := newHarness(t, agent)
+	first.start(t)
+
+	ctx := context.Background()
+	runID, err := first.engine.StartRun(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if got := first.run(t, runID); got.AvailableAt == nil {
+		t.Fatal("the run did not park")
+	}
+
+	// The process dies. Workers, relay, recovery loop, engine: all gone. The
+	// store is the database and stays.
+	clk, store := first.clock, first.store
+	first.crash()
+
+	// Hours pass with nothing running, and the wake-up goes by unattended.
+	clk.Advance(30 * time.Hour)
+
+	// A new process comes up. It has never seen this run.
+	second := newHarnessOn(t, agent, inproc.New(64), clk, store)
+	second.start(t)
+
+	second.runtime.ScanOnce(ctx)
+
+	run := second.run(t, runID)
+	if run.Status != core.RunCompleted {
+		t.Fatalf("status = %s (%s), want COMPLETED after the restart", run.Status, run.LastError)
+	}
+	if run.AvailableAt != nil {
+		t.Fatalf("AvailableAt = %v after waking, want nil", run.AvailableAt)
+	}
+	assertHistory(t, second.history(t, runID), []core.EventType{
+		core.EventRunStarted,
+		core.EventTimerSet,
+		core.EventTimerFired,
+		core.EventRunCompleted,
+	})
+}
+
+// TestARestartMidSleepDoesNotWakeTheRunEarly is the other half.
+//
+// Recovering a run must not mean resuming it. A restarted runtime rediscovers
+// every RUNNING run, and the naive recovery — advance anything that is RUNNING
+// with nothing in flight — would cut short every sleep in the system on every
+// deploy, which is worse than losing the timers because the runs would carry
+// on as though the wait had happened.
+func TestARestartMidSleepDoesNotWakeTheRunEarly(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	wake := start.Add(24 * time.Hour)
+
+	agent := deciderFunc(func(_ core.Run, history []core.Event) (core.Decision, error) {
+		if !hasEvent(history, core.EventTimerFired) {
+			return core.Decision{Kind: core.DecideSleep, StepID: core.Step(1), WakeAt: wake}, nil
+		}
+		return core.Decision{Kind: core.DecideComplete}, nil
+	})
+
+	first := newHarness(t, agent)
+	first.start(t)
+
+	ctx := context.Background()
+	runID, err := first.engine.StartRun(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	clk, store := first.clock, first.store
+	first.crash()
+
+	// One hour in. Twenty-three still to go.
+	clk.Advance(time.Hour)
+
+	second := newHarnessOn(t, agent, inproc.New(64), clk, store)
+	second.start(t)
+	for i := 0; i < 5; i++ {
+		second.runtime.ScanOnce(ctx)
+	}
+
+	run := second.run(t, runID)
+	if run.Status != core.RunRunning {
+		t.Fatalf("status = %s, want RUNNING; the restart cut the sleep short", run.Status)
+	}
+	if run.AvailableAt == nil || !run.AvailableAt.Equal(wake) {
+		t.Fatalf("AvailableAt = %v, want the original wake %s", run.AvailableAt, wake)
+	}
+	assertHistory(t, second.history(t, runID), []core.EventType{
+		core.EventRunStarted,
+		core.EventTimerSet,
+	})
 }
