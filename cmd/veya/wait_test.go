@@ -77,3 +77,20 @@ func TestRoughlyDropsNoiseAPersonCannotUse(t *testing.T) {
 		}
 	}
 }
+
+// TestASignalWaitNamesTheSignal. "waiting for SIGNAL" tells an operator
+// nothing the parked status did not already say. The name is the thing they
+// can act on -- it is the argument to `veya signal`.
+func TestASignalWaitNamesTheSignal(t *testing.T) {
+	got := describeWait(core.Wait{
+		Kind: core.WaitSignal, StepID: core.Step(2),
+		Signal: "approval", Until: core.Indefinite,
+	}, time.Now())
+
+	if !strings.Contains(got, `"approval"`) {
+		t.Fatalf("describeWait = %q, want it to name the signal", got)
+	}
+	if strings.Contains(got, "SIGNAL") {
+		t.Fatalf("describeWait = %q, want the name rather than the kind", got)
+	}
+}

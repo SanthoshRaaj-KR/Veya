@@ -14,6 +14,7 @@
 //	veya run start --agent NAME  create a run for the runtime to pick up
 //	veya run show RUN_ID         status, output, tasks
 //	veya run history RUN_ID      the full event log
+//	veya signal RUN_ID NAME      tell a waiting run that something happened
 //	veya effects                 external actions with an unresolved outcome
 //	veya outbox                  committed work that has not reached a worker
 package main
@@ -53,6 +54,7 @@ Commands:
   effects               external actions whose outcome is still unknown
   effects show KEY      one effect in full
   effects resolve KEY   record what a human established
+  signal RUN_ID NAME    tell a waiting run that something happened
   outbox                committed work that has not reached a worker
 
 Run "veya COMMAND --help" for flags.
@@ -71,6 +73,8 @@ func run(args []string) error {
 		return cmdRun(args[1:])
 	case "effects":
 		return cmdEffects(args[1:])
+	case "signal":
+		return cmdSignal(args[1:])
 	case "outbox":
 		return cmdOutbox(args[1:])
 	case "help", "-h", "--help":
@@ -286,7 +290,14 @@ func cmdRunShow(args []string) error {
 // the run is a moment from being picked up by the ordinary scan.
 func describeWait(w core.Wait, now time.Time) string {
 	what := "sleeping"
-	if w.Kind != core.WaitTimer {
+	switch w.Kind {
+	case core.WaitTimer:
+	case core.WaitSignal:
+		// Name the signal. "waiting for SIGNAL" tells an operator nothing they
+		// did not already know from the run being parked; the name is the
+		// thing they can go and send.
+		what = fmt.Sprintf("on signal %q", w.Signal)
+	default:
 		what = string(w.Kind)
 	}
 
