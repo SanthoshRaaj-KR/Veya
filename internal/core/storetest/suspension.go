@@ -21,6 +21,8 @@ func suspensionContracts() []contract {
 		{"AdvancingClearsThePark", testAdvancingClearsThePark},
 		{"TheScanLeavesAWaitingRunAlone", testScanLeavesAWaitingRunAlone},
 		{"AnExpiredParkIsPickedUpNormally", testExpiredParkIsPickedUpNormally},
+		{"NextWakeUpFindsTheEarliestPark", testNextWakeUpFindsTheEarliestPark},
+		{"NextWakeUpIgnoresFinishedRuns", testNextWakeUpIgnoresFinishedRuns},
 	}
 }
 
@@ -183,5 +185,77 @@ func testExpiredParkIsPickedUpNormally(t *testing.T, s core.Store) {
 	}
 	if len(got) != 1 {
 		t.Fatal("a run parked at exactly now was not picked up; the comparison must be inclusive")
+	}
+}
+
+// testNextWakeUpFindsTheEarliestPark. The recovery loop uses this to shorten
+// its next sleep, so a wrong answer is a late wake-up rather than a lost one —
+// but "earliest" has to mean earliest, or a run parked for a second waits out
+// the full interval behind one parked for a week.
+func testNextWakeUpFindsTheEarliestPark(t *testing.T, s core.Store) {
+	ctx := context.Background()
+	now := time.Date(2026, time.September, 20, 12, 0, 0, 0, time.UTC)
+
+	if _, ok, err := s.NextWakeUp(ctx, now); err != nil || ok {
+		t.Fatalf("NextWakeUp on an empty store = (ok %v, err %v), want no wake-up", ok, err)
+	}
+
+	soon := now.Add(time.Second)
+	later := now.Add(7 * 24 * time.Hour)
+	for id, at := range map[core.RunID]time.Time{
+		"run-later": later,
+		"run-soon":  soon,
+	} {
+		mustCreateRun(t, s, id)
+		at := at
+		mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+			return tx.AdvanceRun(ctx, id, 0, core.RunState{
+				Status: core.RunRunning, AvailableAt: &at,
+			})
+		})
+	}
+
+	got, ok, err := s.NextWakeUp(ctx, now)
+	if err != nil || !ok {
+		t.Fatalf("NextWakeUp = (ok %v, err %v), want a wake-up", ok, err)
+	}
+	if !got.Equal(soon) {
+		t.Fatalf("NextWakeUp = %s, want the earliest park %s", got, soon)
+	}
+
+	// Strictly after. A park that is already due is not a future wake-up: it
+	// is work for this scan, and returning it would have the loop wake
+	// immediately to rediscover what it just failed to advance.
+	if _, ok, err := s.NextWakeUp(ctx, later); err != nil || ok {
+		t.Fatalf("NextWakeUp past every park = (ok %v, err %v), want none", ok, err)
+	}
+	if _, ok, _ := s.NextWakeUp(ctx, soon); !ok {
+		t.Fatal("NextWakeUp at the first park found nothing; the later one is still ahead")
+	}
+}
+
+// testNextWakeUpIgnoresFinishedRuns. A terminal run's available_at is never
+// cleared by anything, so a query that did not filter on status would keep
+// waking the loop for runs that ended weeks ago.
+func testNextWakeUpIgnoresFinishedRuns(t *testing.T, s core.Store) {
+	ctx := context.Background()
+	now := time.Date(2026, time.September, 20, 12, 0, 0, 0, time.UTC)
+	wake := now.Add(time.Hour)
+
+	id := core.RunID("run-done-but-parked")
+	mustCreateRun(t, s, id)
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		return tx.AdvanceRun(ctx, id, 0, core.RunState{
+			Status: core.RunRunning, AvailableAt: &wake,
+		})
+	})
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		return tx.AdvanceRun(ctx, id, 1, core.RunState{
+			Status: core.RunCompleted, AvailableAt: &wake,
+		})
+	})
+
+	if _, ok, err := s.NextWakeUp(ctx, now); err != nil || ok {
+		t.Fatalf("NextWakeUp = (ok %v, err %v); a finished run must not wake the loop", ok, err)
 	}
 }

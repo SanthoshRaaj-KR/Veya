@@ -226,6 +226,29 @@ func (s *Store) RunsAwaitingAdvance(_ context.Context, now time.Time, limit int)
 	return out, nil
 }
 
+// NextWakeUp returns the earliest park strictly after `after`.
+func (s *Store) NextWakeUp(_ context.Context, after time.Time) (time.Time, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var (
+		earliest time.Time
+		found    bool
+	)
+	for _, r := range s.st.runs {
+		if r.Status != core.RunRunning || r.AvailableAt == nil {
+			continue
+		}
+		if !r.AvailableAt.After(after) {
+			continue
+		}
+		if !found || r.AvailableAt.Before(earliest) {
+			earliest, found = *r.AvailableAt, true
+		}
+	}
+	return earliest, found, nil
+}
+
 func (s *Store) Close() error { return nil }
 
 // copyTime copies a nullable instant so that a caller holding the pointer it

@@ -17,6 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -205,6 +206,28 @@ func (s *Store) RunsAwaitingAdvance(ctx context.Context, now time.Time, limit in
 		out = append(out, id)
 	}
 	return out, translate("runs awaiting advance", rows.Err())
+}
+
+// NextWakeUp returns the earliest park strictly after `after`.
+//
+// One index-only read of idx_runs_available: the index is ordered by
+// available_at and partial on RUNNING, so this is a single leading-edge probe
+// rather than an aggregate over the table.
+func (s *Store) NextWakeUp(ctx context.Context, after time.Time) (time.Time, bool, error) {
+	var wake time.Time
+	err := s.db.QueryRowContext(ctx,
+		`SELECT available_at
+		 FROM runs
+		 WHERE status = 'RUNNING' AND available_at > $1
+		 ORDER BY available_at
+		 LIMIT 1`, after.UTC()).Scan(&wake)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, translate("next wake up", err)
+	}
+	return wake.UTC(), true, nil
 }
 
 // --- scanning -------------------------------------------------------------

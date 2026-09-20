@@ -44,6 +44,22 @@ type Store interface {
 	// timer that expired while the runtime was down.
 	RunsAwaitingAdvance(ctx context.Context, now time.Time, limit int) ([]RunID, error)
 
+	// NextWakeUp returns the earliest instant after `after` at which some
+	// parked run becomes ready, and whether there is one at all.
+	//
+	// It is a hint, and the type says so by being cheap to ignore: the
+	// recovery loop uses it to shorten its next sleep so that a run parked
+	// for 200ms is not kept waiting for a five-second tick. Nothing depends
+	// on it being right. It is re-read from the store on every pass rather
+	// than held, so a process that restarts re-derives it, and a value that
+	// is stale or missing costs latency and never correctness — the fixed
+	// interval remains the upper bound on how late a wake-up can be.
+	//
+	// This is deliberately not a timer. A time.After holding a pending
+	// wake-up is state above the store, and state above the store is state a
+	// restart loses.
+	NextWakeUp(ctx context.Context, after time.Time) (time.Time, bool, error)
+
 	// GetEffect reads one ledger row by its provider-facing key.
 	GetEffect(ctx context.Context, key IdempotencyKey) (Effect, error)
 

@@ -76,26 +76,76 @@ func NewRuntime(cfg RuntimeConfig) *Runtime {
 }
 
 // Run scans until ctx is cancelled.
+//
+// The gap between scans is the interval, or less when a parked run is due
+// sooner. A fixed ticker alone would make every sleep round up: a run asked to
+// wait 200ms would wait for the next five-second tick, and "sleep for a
+// second" would be a phrase the runtime could not honour.
+//
+// The shorter gap is recomputed from the store on every pass and never held.
+// That is the whole distinction this commit is about — a time.After holding a
+// pending wake-up is state above the store, and state above the store is state
+// a restart loses. Here the worst a lost or stale hint can do is make a
+// wake-up late by one interval.
 func (r *Runtime) Run(ctx context.Context) error {
 	r.log.Info("recovery loop started", "interval", r.interval, "batch", r.batch)
 
-	ticker := time.NewTicker(r.interval)
-	defer ticker.Stop()
-
-	// Scan immediately, so a restart picks up stranded work without waiting
-	// out a full interval.
+	// Scan immediately, so a restart picks up stranded work -- including a
+	// wake-up that expired while the process was down -- without waiting out
+	// a full interval.
 	r.ScanOnce(ctx)
+
+	timer := time.NewTimer(r.nextDelay(ctx))
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			r.log.Info("recovery loop stopped")
 			return ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 			r.ScanOnce(ctx)
+			timer.Reset(r.nextDelay(ctx))
 		}
 	}
 }
+
+// nextDelay is how long to wait before the next scan.
+//
+// It is a hint from the store, clamped on both ends: never longer than the
+// configured interval, because the interval is the guarantee, and never
+// shorter than a floor, because a due run that fails to advance would
+// otherwise be retried as fast as the machine allows.
+func (r *Runtime) nextDelay(ctx context.Context) time.Duration {
+	floor := minScanDelay
+	if r.interval < floor {
+		floor = r.interval
+	}
+
+	wake, ok, err := r.store.NextWakeUp(ctx, r.clock.Now())
+	if err != nil {
+		// Not worth logging at anything above debug. The next tick still
+		// happens, on the interval, and the work still gets picked up.
+		r.log.Debug("scan: next wake up unavailable", "error", err)
+		return r.interval
+	}
+	if !ok {
+		return r.interval
+	}
+
+	d := wake.Sub(r.clock.Now())
+	if d > r.interval {
+		return r.interval
+	}
+	if d < floor {
+		return floor
+	}
+	return d
+}
+
+// minScanDelay stops a run that is due and cannot advance from being retried
+// in a tight loop.
+const minScanDelay = 50 * time.Millisecond
 
 // ScanOnce performs a single recovery pass.
 //
