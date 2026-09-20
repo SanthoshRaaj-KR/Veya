@@ -30,6 +30,7 @@ func effectContracts() []contract {
 		{"CommitRecordsTheProvidersAnswer", testCommitRecordsResponse},
 		{"UnresolvedFindsAmbiguousEffects", testUnresolvedEffects},
 		{"ListEffectsIsTheAuditTrail", testListEffects},
+		{"TheAuditTrailIsStableUnderSiblings", testAuditTrailStableUnderSiblings},
 		{"MissingEffectReportsNotFound", testEffectNotFound},
 	}
 }
@@ -317,6 +318,77 @@ func testListEffects(t *testing.T, s core.Store) {
 	for i, e := range got {
 		if e.Key != want[i] {
 			t.Fatalf("effect %d = %s, want %s (audit order is creation order)", i, e.Key, want[i])
+		}
+	}
+}
+
+// testAuditTrailStableUnderSiblings. Before fan-out, a run's effects were
+// created one at a time and creation order was a total order. Children of one
+// decision are reserved together and can share a timestamp to whatever
+// resolution the clock has, so creation order alone stops deciding.
+//
+// The audit trail is what answers "what did this run actually do to the
+// outside world?". An answer whose order changes between two reads of
+// unchanged data is not an audit trail, it is a bag -- and a reader diffing
+// two exports would see churn that is not there.
+func testAuditTrailStableUnderSiblings(t *testing.T, s core.Store) {
+	ctx := context.Background()
+	runID, taskID := seedTask(t, s, "run-siblings", "task-siblings")
+
+	// Reserved in one transaction, so nothing distinguishes them but the key.
+	parent := core.Step(4)
+	children := parent.Children(5)
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		// Inserted back to front, so an adapter that happened to return
+		// insertion order would disagree with the expectation below.
+		for i := len(children) - 1; i >= 0; i-- {
+			key := core.NewIdempotencyKey(runID, children[i], 1)
+			if err := tx.ReserveEffect(ctx, newEffect(
+				core.EffectID(idFor(i)), key, runID, taskID)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	var first []core.IdempotencyKey
+	for read := 0; read < 3; read++ {
+		got, err := s.ListEffects(ctx, runID)
+		if err != nil {
+			t.Fatalf("ListEffects: %v", err)
+		}
+		if len(got) != len(children) {
+			t.Fatalf("got %d effects, want %d", len(got), len(children))
+		}
+
+		keys := keysOf(got)
+		if read == 0 {
+			first = keys
+			continue
+		}
+		if fmt.Sprint(keys) != fmt.Sprint(first) {
+			t.Fatalf("read %d returned %v, first read returned %v; "+
+				"the audit trail must not reorder between reads", read, keys, first)
+		}
+	}
+
+	// And the order obeys the rule a reader can rely on: creation time, then
+	// key. Asserting the rule rather than a literal sequence keeps this
+	// honest whatever the clock's resolution is -- on a real one, siblings
+	// reserved in a single transaction routinely share a timestamp, and the
+	// key is then the only thing standing between an audit trail and a bag.
+	rows, err := s.ListEffects(ctx, runID)
+	if err != nil {
+		t.Fatalf("ListEffects: %v", err)
+	}
+	for i := 1; i < len(rows); i++ {
+		prev, cur := rows[i-1], rows[i]
+		switch {
+		case cur.CreatedAt.Before(prev.CreatedAt):
+			t.Fatalf("effect %d was created before effect %d but comes after it", i, i-1)
+		case cur.CreatedAt.Equal(prev.CreatedAt) && cur.Key < prev.Key:
+			t.Fatalf("effects %d and %d share a timestamp and are not in key order: "+
+				"%s then %s", i-1, i, prev.Key, cur.Key)
 		}
 	}
 }
