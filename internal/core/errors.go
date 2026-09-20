@@ -56,6 +56,15 @@ var (
 	// prevented duplicate into a stuck run.
 	ErrEffectExists = errors.New("veya: effect already exists for idempotency key")
 
+	// ErrSignalExists is returned when a signal has already been recorded
+	// under this (run_id, signal_id), enforced by a unique constraint.
+	//
+	// Callers treat it as success. Delivery is at-least-once, so a sender
+	// retrying a callback it is unsure landed is the expected case, not an
+	// error -- and the constraint is what makes the retry harmless rather
+	// than a second approval.
+	ErrSignalExists = errors.New("veya: signal already recorded")
+
 	// ErrFenced is returned when a worker presents a fencing token lower than
 	// the one currently valid for a task.
 	//
