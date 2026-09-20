@@ -202,7 +202,7 @@ func (s *Store) PendingTasks(_ context.Context, limit int) ([]core.Task, error) 
 	return out, nil
 }
 
-func (s *Store) RunsAwaitingAdvance(_ context.Context, limit int) ([]core.RunID, error) {
+func (s *Store) RunsAwaitingAdvance(_ context.Context, now time.Time, limit int) ([]core.RunID, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -215,7 +215,7 @@ func (s *Store) RunsAwaitingAdvance(_ context.Context, limit int) ([]core.RunID,
 
 	var out []core.RunID
 	for id, r := range s.st.runs {
-		if r.Status == core.RunRunning && !inFlight[id] {
+		if r.Status == core.RunRunning && !inFlight[id] && !r.IsWaiting(now) {
 			out = append(out, id)
 		}
 	}

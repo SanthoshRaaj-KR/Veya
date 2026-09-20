@@ -167,20 +167,30 @@ func (s *Store) PendingTasks(ctx context.Context, limit int) ([]core.Task, error
 	return collectTasks(rows, "pending tasks")
 }
 
-// RunsAwaitingAdvance returns runs that are RUNNING with nothing in flight,
-// meaning the next decision is owed. A run started by the CLI and advanced by
-// the runtime process is found this way.
-func (s *Store) RunsAwaitingAdvance(ctx context.Context, limit int) ([]core.RunID, error) {
+// RunsAwaitingAdvance returns runs that are RUNNING with nothing in flight and
+// no park into the future, meaning the next decision is owed. A run started by
+// the CLI and advanced by the runtime process is found this way.
+//
+// The available_at predicate is written IS NULL OR <= $1 rather than with
+// COALESCE, so that idx_runs_available can answer it: a function over the
+// column would make the index unusable and turn the scan into a sequential
+// read of every RUNNING row.
+//
+// now comes from the caller, never from NOW(). The database's clock is the one
+// clock the virtual clock cannot reach, and a durable-timer test that had to
+// run in real time would be a test nobody runs.
+func (s *Store) RunsAwaitingAdvance(ctx context.Context, now time.Time, limit int) ([]core.RunID, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT r.run_id
 		 FROM runs r
 		 WHERE r.status = 'RUNNING'
+		   AND (r.available_at IS NULL OR r.available_at <= $1)
 		   AND NOT EXISTS (
 		       SELECT 1 FROM tasks t
 		       WHERE t.run_id = r.run_id AND t.status IN ('PENDING','RUNNING')
 		   )
 		 ORDER BY r.run_id
-		 LIMIT $1`, limitOrAll(limit))
+		 LIMIT $2`, now.UTC(), limitOrAll(limit))
 	if err != nil {
 		return nil, translate("runs awaiting advance", err)
 	}

@@ -8,12 +8,19 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
+// farFuture is the "now" a scan is given when the test is not about parking.
+// It is past every instant these contracts set except core.Indefinite, so a
+// run only fails to appear if something other than a park excluded it.
+var farFuture = time.Date(2100, time.January, 1, 0, 0, 0, 0, time.UTC)
+
 // suspensionContracts covers runs.available_at: a run that is RUNNING with
 // nothing in flight and is nonetheless not owed a decision yet.
 func suspensionContracts() []contract {
 	return []contract{
 		{"AvailableAtRoundTrips", testAvailableAtRoundTrips},
 		{"AdvancingClearsThePark", testAdvancingClearsThePark},
+		{"TheScanLeavesAWaitingRunAlone", testScanLeavesAWaitingRunAlone},
+		{"AnExpiredParkIsPickedUpNormally", testExpiredParkIsPickedUpNormally},
 	}
 }
 
@@ -94,5 +101,87 @@ func testAdvancingClearsThePark(t *testing.T, s core.Store) {
 
 	if got := mustGetRun(t, s, id); got.AvailableAt != nil {
 		t.Fatalf("AvailableAt = %v after an ordinary advance, want nil", got.AvailableAt)
+	}
+}
+
+// testScanLeavesAWaitingRunAlone. Without the predicate a sleeping run is
+// RUNNING with nothing in flight, which is exactly what this query returns —
+// so the recovery loop would advance it on every scan and the run would never
+// actually sleep.
+func testScanLeavesAWaitingRunAlone(t *testing.T, s core.Store) {
+	ctx := context.Background()
+	now := time.Date(2026, time.September, 20, 12, 0, 0, 0, time.UTC)
+
+	ready := core.RunID("run-ready")
+	sleeping := core.RunID("run-sleeping")
+	parked := core.RunID("run-parked-forever")
+	for _, id := range []core.RunID{ready, sleeping, parked} {
+		mustCreateRun(t, s, id)
+	}
+
+	tomorrow := now.Add(24 * time.Hour)
+	forever := core.Indefinite
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		return tx.AdvanceRun(ctx, sleeping, 0, core.RunState{
+			Status: core.RunRunning, AvailableAt: &tomorrow,
+		})
+	})
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		return tx.AdvanceRun(ctx, parked, 0, core.RunState{
+			Status: core.RunRunning, AvailableAt: &forever,
+		})
+	})
+
+	got, err := s.RunsAwaitingAdvance(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("RunsAwaitingAdvance: %v", err)
+	}
+	if len(got) != 1 || got[0] != ready {
+		t.Fatalf("RunsAwaitingAdvance = %v, want only %s; a parked run must not be swept up", got, ready)
+	}
+}
+
+// testExpiredParkIsPickedUpNormally is the other half, and the one that
+// matters after an outage.
+//
+// A run whose wake-up passed while the runtime was down has to come back
+// through the ordinary scan with no catch-up pass and no special case. If an
+// overdue park needed separate handling, every timer that expired during the
+// outage would be waiting for a code path nobody wrote.
+func testExpiredParkIsPickedUpNormally(t *testing.T, s core.Store) {
+	ctx := context.Background()
+	now := time.Date(2026, time.September, 20, 12, 0, 0, 0, time.UTC)
+
+	id := core.RunID("run-overdue")
+	mustCreateRun(t, s, id)
+
+	// Parked to wake three days ago: the runtime was down over the weekend.
+	overdue := now.Add(-72 * time.Hour)
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		return tx.AdvanceRun(ctx, id, 0, core.RunState{
+			Status: core.RunRunning, AvailableAt: &overdue,
+		})
+	})
+
+	got, err := s.RunsAwaitingAdvance(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("RunsAwaitingAdvance: %v", err)
+	}
+	if len(got) != 1 || got[0] != id {
+		t.Fatalf("RunsAwaitingAdvance = %v, want %s; a park in the past means ready, not late", got, id)
+	}
+
+	// And the instant itself is the boundary: exactly now is ready.
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		return tx.AdvanceRun(ctx, id, 1, core.RunState{
+			Status: core.RunRunning, AvailableAt: &now,
+		})
+	})
+	got, err = s.RunsAwaitingAdvance(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("RunsAwaitingAdvance: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatal("a run parked at exactly now was not picked up; the comparison must be inclusive")
 	}
 }

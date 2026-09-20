@@ -24,6 +24,10 @@ import (
 //     the task's own PENDING status still reflects that nothing happened.
 //   - A run started by a different process — the CLI creates a run, and the
 //     runtime process is what has to notice and advance it.
+//   - A run whose park has expired. From Layer 5 the scan is also the timer
+//     wheel: nothing holds a pending wake-up in memory, so a sleeping run is
+//     simply one the scan is not yet allowed to pick up, and the moment it is
+//     allowed it is indistinguishable from any other run owed a decision.
 //
 // So the outbox guarantees a task is announced, and the scan covers the case
 // where it was announced to nobody. The scan republishes tasks that may already
@@ -35,6 +39,7 @@ type Runtime struct {
 	engine     *Engine
 	store      core.Store
 	dispatcher core.Dispatcher
+	clock      core.Clock
 	interval   time.Duration
 	batch      int
 	log        *slog.Logger
@@ -63,6 +68,7 @@ func NewRuntime(cfg RuntimeConfig) *Runtime {
 		engine:     cfg.Engine,
 		store:      cfg.Engine.store,
 		dispatcher: cfg.Engine.dispatcher,
+		clock:      cfg.Engine.clock,
 		interval:   interval,
 		batch:      batch,
 		log:        cfg.Engine.log,
@@ -107,7 +113,7 @@ func (r *Runtime) ScanOnce(ctx context.Context) {
 		}
 	}
 
-	runs, err := r.store.RunsAwaitingAdvance(ctx, r.batch)
+	runs, err := r.store.RunsAwaitingAdvance(ctx, r.clock.Now(), r.batch)
 	if err != nil {
 		r.logFailure("scan: list runs awaiting advance", err)
 	}

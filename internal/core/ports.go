@@ -31,9 +31,18 @@ type Store interface {
 	PendingTasks(ctx context.Context, limit int) ([]Task, error)
 
 	// RunsAwaitingAdvance returns runs that are RUNNING with no task still in
-	// flight, meaning the next decision is owed. A run started by one process
-	// and advanced by another is found this way.
-	RunsAwaitingAdvance(ctx context.Context, limit int) ([]RunID, error)
+	// flight and no park into the future, meaning the next decision is owed.
+	// A run started by one process and advanced by another is found this way.
+	//
+	// It takes now for the same reason ExpiredLeases does: time is a port
+	// above the composition root, and a query that read the database's clock
+	// would be the one place in the system the virtual clock cannot reach —
+	// which would make every durable-timer test either real-time or a lie.
+	//
+	// A park in the past is ready, not late. There is no catch-up pass and no
+	// special case for an overdue wake-up, because the alternative loses every
+	// timer that expired while the runtime was down.
+	RunsAwaitingAdvance(ctx context.Context, now time.Time, limit int) ([]RunID, error)
 
 	// GetEffect reads one ledger row by its provider-facing key.
 	GetEffect(ctx context.Context, key IdempotencyKey) (Effect, error)

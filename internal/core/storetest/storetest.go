@@ -421,7 +421,7 @@ func testAwaitingAdvance(t *testing.T, s core.Store) {
 		return tx.CreateTask(ctx, newTask("task-busy", busy, core.Step(1)))
 	})
 
-	got, err := s.RunsAwaitingAdvance(ctx, 10)
+	got, err := s.RunsAwaitingAdvance(ctx, farFuture, 10)
 	if err != nil {
 		t.Fatalf("RunsAwaitingAdvance: %v", err)
 	}
@@ -437,7 +437,7 @@ func testAwaitingAdvance(t *testing.T, s core.Store) {
 		return tx.TransitionTask(ctx, "task-busy", core.TaskRunning, core.TaskCompleted, core.TaskOutcome{})
 	})
 
-	got, err = s.RunsAwaitingAdvance(ctx, 10)
+	got, err = s.RunsAwaitingAdvance(ctx, farFuture, 10)
 	if err != nil {
 		t.Fatalf("RunsAwaitingAdvance: %v", err)
 	}
