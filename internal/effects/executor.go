@@ -34,14 +34,31 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
 
-// effectSeq is the position of an effect within its step.
+// FirstEffect is the sequence number of the first external action in a step.
 //
-// A task performs one tool call, so there is exactly one external action per
-// step and this is always 1. The concept is still threaded through the key,
-// because it is what will distinguish sub-effects when the SDK lets one tool
-// declare several, and retrofitting the numbering later would invalidate every
-// key ever issued.
-const effectSeq = 1
+// The key format has carried a sequence since Layer 2 -- run:step:E<seq> --
+// and until now it was a package constant, which made "always 1" a fact about
+// this file rather than a fact about the execution model. It is now derived
+// from the task, so the model is what decides.
+//
+// It still evaluates to 1 for everything this build can issue, and that is
+// correct rather than unfinished: a task performs one tool call, so there is
+// one external action per step. Fan-out does not change that -- it makes more
+// *steps*, each with its own key -- and sub-effects, which are what make a
+// second action inside one step, are deliberately deferred to a layer that is
+// not also introducing parallelism. See docs/execution-model.md section 6.
+//
+// The difference this commit makes is that adding them later changes a caller
+// rather than a constant, and that the keys already issued are pinned by a
+// test rather than by nothing.
+const FirstEffect = 1
+
+// effectSeqFor returns the sequence number for a task's external action.
+//
+// One function, so that the day a step declares several effects there is a
+// single place that knows how they are numbered -- and so that the numbering
+// for a step that declares one can be shown not to have changed.
+func effectSeqFor(_ core.Task) int { return FirstEffect }
 
 // Executor runs a task's tool, through the ledger when the tool has
 // consequences.
@@ -103,7 +120,7 @@ func (x *Executor) Execute(ctx context.Context, task core.Task) (json.RawMessage
 		return x.call(ctx, descriptor, callFor(task, ""))
 	}
 
-	key := core.NewIdempotencyKey(task.RunID, task.StepID, effectSeq)
+	key := core.NewIdempotencyKey(task.RunID, task.StepID, effectSeqFor(task))
 	effect, err := x.reserve(ctx, task, descriptor, key)
 	if err != nil {
 		return nil, err

@@ -212,3 +212,58 @@ func TestEffectClassCapabilities(t *testing.T) {
 		t.Error("NONE has nothing to resolve")
 	}
 }
+
+// TestKeysIssuedBeforeLayer5AreUnchanged is a regression test with a literal
+// in it on purpose.
+//
+// Layer 5 made the step half of the key able to read S3.0 as well as S3, and
+// moved the sequence half from a package constant to something derived. Either
+// change could have altered the key a plain single-call step produces — and an
+// altered key is not a cosmetic difference. Every ledger row already written
+// is addressed by its key, so a run recovering across the upgrade would find
+// no record of an action it had already performed, and perform it again.
+//
+// These strings are what this system has been issuing since Layer 2. They are
+// written out rather than computed so that the test cannot agree with a bug by
+// deriving the expectation the same wrong way.
+func TestKeysIssuedBeforeLayer5AreUnchanged(t *testing.T) {
+	cases := map[string]core.IdempotencyKey{
+		"R123:S2:E1": core.NewIdempotencyKey("R123", core.Step(2), 1),
+		"R1:S1:E1":   core.NewIdempotencyKey("R1", core.Step(1), 1),
+		"R1:S10:E1":  core.NewIdempotencyKey("R1", core.Step(10), 1),
+	}
+
+	for want, got := range cases {
+		if string(got) != want {
+			t.Errorf("key = %q, want %q; every ledger row already written is "+
+				"addressed by the old form", got, want)
+		}
+	}
+}
+
+// TestAFanOutDoesNotCollideWithItsParent. A child's key has to differ from its
+// parent's and from its siblings', or two calls share a ledger row and the
+// second is reported as already committed.
+func TestAFanOutDoesNotCollideWithItsParent(t *testing.T) {
+	parent := core.Step(3)
+
+	seen := map[core.IdempotencyKey]string{}
+	record := func(name string, key core.IdempotencyKey) {
+		if other, clash := seen[key]; clash {
+			t.Fatalf("%s and %s share the key %s", name, other, key)
+		}
+		seen[key] = name
+	}
+
+	record("parent", core.NewIdempotencyKey("R1", parent, 1))
+	for i, child := range parent.Children(3) {
+		record(fmt.Sprintf("child %d", i), core.NewIdempotencyKey("R1", child, 1))
+	}
+
+	// And a child's key is stable, which is the whole reason children are
+	// numbered by invocation order.
+	first := core.NewIdempotencyKey("R1", parent.Child(0), 1)
+	if string(first) != "R1:S3.0:E1" {
+		t.Fatalf("child key = %q, want R1:S3.0:E1", first)
+	}
+}
