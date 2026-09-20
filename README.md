@@ -835,7 +835,10 @@ CREATE INDEX idx_outbox_unpublished ON task_outbox (outbox_id)
 | `EFFECT_ESCALATED` | An outcome cannot be resolved automatically; a person must decide |
 | `LEASE_EXPIRED` | An owner went silent and the task was reclaimed under a higher token |
 | `TIMER_SET` / `TIMER_FIRED` | Durable sleep |
-| `SIGNAL_RECEIVED` | External event delivered to a waiting run |
+| `FAN_OUT_STARTED` | One decision became several tasks, under a join policy |
+| `SIGNAL_WAIT_STARTED` | A run parked waiting for a named signal |
+| `SIGNAL_RECEIVED` | A stored signal was consumed by a waiting run |
+| `SIGNAL_WAIT_TIMED_OUT` | A signal wait reached its deadline with nothing to read |
 | `RUN_CANCELLED` / `RUN_COMPLETED` / `RUN_FAILED` | Terminal |
 
 Events carry `run_id`, `seq`, and where applicable `step_id`, making every event addressable to a logical position in the execution.
@@ -1373,13 +1376,46 @@ Not for performance reasons. Kafka is a distributed log without per-message ackn
 > durable clock (Layer 5, with timers), and there is no auth on the worker
 > port, which is why it binds loopback.
 
-**Layer 5 — Execution model completeness**
-- [ ] Fan-out / fan-in with deterministic child step IDs
-- [ ] Durable timers and external signals
-- [ ] Cancellation and compensation hooks
-- [ ] Retry policies, backoff, dead-letter handling
+**Layer 5 — Suspension and fan-out** ✅ *complete*
+- [x] Fan-out / fan-in with deterministic child step IDs
+- [x] Durable timers and external signals
+- [x] `ctx.sleep`, `ctx.wait_for`, `ctx.call_parallel` in the Python SDK
+- [x] `veya signal`, and `veya run show` saying what a run is waiting for
 
-**Layer 6 — Operability**
+> Two shapes that are not a straight line: a run that **waits** and a run that
+> **branches**. They share one mechanism -- a run that is RUNNING with nothing
+> in flight -- which is why they are one layer.
+>
+> A suspension is a nullable `available_at` on `runs` and one predicate in the
+> recovery scan, not a new run state: a waiting run is still running. Nothing
+> holds a pending wake-up in memory, so the scan *is* the timer wheel and a
+> restart cannot lose one. Signals are stored on arrival whether or not
+> anything is waiting, which deletes the early-signal race rather than
+> narrowing it -- a wait is a read, so early and late arrival run identical
+> code.
+>
+> Proven by test: a run sleeps a day, the whole stack is killed and rebuilt,
+> and it wakes on schedule under a runtime that has never heard of it; a
+> signal delivered before its `wait_for` produces byte-identical history to one
+> delivered after; ten children with three permanent failures join in
+> invocation order and replay identically. `make demo-onboarding` runs all
+> three shapes end to end against PostgreSQL.
+>
+> **Cancellation, compensation and retry policy moved to Layer 6.** Each is
+> policy layered on the execution model rather than part of it -- none changes
+> how a run suspends, how a step is numbered, or how replay works, which is the
+> test for whether something belonged here. The reasoning is in
+> [docs/execution-model.md](docs/execution-model.md) section 8.
+>
+> `effect_seq` is still 1 for everything this build issues, and deliberately:
+> fan-out makes more *steps*, each with its own key, while sub-effects are what
+> would make a second action inside one step. Shipping both at once gives an
+> unexpected key two candidate causes and no way to bisect.
+
+**Layer 6 — Policy and operability**
+- [ ] Cancellation, and compensation as a decider convention
+- [ ] Retry policies, backoff, dead-letter handling, deadline propagation
+- [ ] HTTP signal ingestion
 - [ ] Compaction, snapshots, tiered retention
 - [ ] Payload offloading for large results
 - [ ] Local dashboard: run timeline, stuck-run detection, effect audit

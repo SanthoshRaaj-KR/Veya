@@ -37,8 +37,8 @@ If you read four files, read these:
 | **2 — Effect safety** | the ledger, `UNKNOWN`, leases, fencing | ✅ done | `effects/`, `lease/` |
 | **3 — Distribution** | outbox + relay, three transports, worker processes | ✅ done | `outbox/`, `dispatch/`, `cmd/veya-worker` |
 | **4 — Agent execution** | worker protocol, Python SDK, replay | ✅ done | `proto/`, `internal/sdk/`, `sdk/python/` |
-| **5 — Execution model** | fan-out, timers, retry policy, cancellation | 🔜 planned | — |
-| **6 — Operability** | compaction, dashboard, metrics | 🔜 planned | `telemetry/` |
+| **5 — Suspension and fan-out** | timers, signals, fan-out / fan-in | ✅ done | `engine/`, `core/`, `sdk/python/` |
+| **6 — Policy and operability** | cancellation, retry policy, compaction, dashboard | 🔜 planned | `telemetry/` |
 | **7 — Validation** | simulation harness, chaos suite, benchmarks | 🔜 planned | `test/` |
 
 ---
@@ -63,6 +63,9 @@ signature here, the boundary has leaked.
 | `errors.go` | every sentinel error | ever — no error string is matched anywhere |
 | `ports.go` | `Store`, `Tx`, `Dispatcher`, `Clock`, `IDGen` | always |
 | `append.go` | the conditional-append helper | adding an event |
+| `wait.go` | `Wait`, `PendingWait`, `ConsumedSignals`, `Indefinite` | asking why a run is parked |
+| `signal.go` | `Signal`, `SignalStore` — stored on arrival, read by a wait | wiring an external callback |
+| `join.go` | `FanOut`, `ChildOutcome`, `PendingFanOut`, `Satisfied` | asking when a fan-out is done waiting |
 
 **Two functions carry most of the design's weight.** `ClassifyFailure` decides
 what an error *means* — it defaults to `UNKNOWN`, because an error returned
@@ -95,7 +98,8 @@ of those mappings wrong is how "this action already happened" turns into "some
 conflict occurred", which is a different instruction to the caller.
 
 Schema: `migrations/0001_init.sql` creates everything; `0002_outbox_relay.sql`
-adds what writing the relay turned out to need.
+adds what writing the relay turned out to need; `0003_run_suspension.sql` adds
+`runs.available_at`; `0004_signals.sql` adds the `signals` table.
 
 ---
 
@@ -103,9 +107,24 @@ adds what writing the relay turned out to need.
 
 | File | What |
 |---|---|
-| `engine.go` | `StartRun`, `Advance`, `dispatch`. The engine is bound to **one agent** and refuses to advance anyone else's runs |
+| `engine.go` | `StartRun`, `Advance`, `dispatch`, `park`, `resume`. The engine is bound to **one agent** and refuses to advance anyone else's runs |
 | `tasks.go` | `ClaimTask`, `Heartbeat`, `CompleteTask`, `FailTask`, `assertToken` |
-| `runtime.go` | the recovery scan |
+| `runtime.go` | the recovery scan, which from Layer 5 is also the timer wheel |
+| `fanout.go` | one decision committed as N tasks, N events and N delivery intents |
+| `signals.go` | `DeliverSignal` — record the arrival and un-park the run, together |
+
+**`resume` runs before the decider on every advance**, and it is what turns an
+event in the outside world into a fact in history. The agent body cannot read a
+clock or query the signals table — an answer that changes between replays
+diverges the step *after* the one that read it — so the engine looks once,
+records what it found, and the body reads that record back like any other
+history.
+
+**A dead-lettered child does not fail the run.** Before fan-out, one step was
+in flight at a time, so a step that would never complete was a run that could
+never proceed. A child is one outcome among several, and what that means is the
+body's business — see `docs/execution-model.md` §7.3. An *escalated* task still
+fails the run in both shapes, because its effect's outcome is unresolved.
 
 **`assertToken` is called on every mutating path**, not at one chokepoint. A
 single well-placed check is the version of this that looks correct and is not:
@@ -245,8 +264,8 @@ tokens, or touch the ledger. Those stay where they already are.
 | `effects.py` | `EffectClass`, `Resolution`, `ToolCall`, `Effect` — the vocabulary an author reads constantly |
 | `errors.py` | the exception hierarchy. `NotExecuted` is the one that makes a claim rather than naming a situation |
 | `tools.py` | `@tool`, and the declaration-time refusals that keep an effect class honest |
-| `history.py` | folding the event log into something indexed by step |
-| `agent.py` | `@agent`, `ctx.call`, the replay driver, `NonDeterminismError` |
+| `history.py` | folding the event log into something indexed by step, including suspensions (`RecordedWait`) |
+| `agent.py` | `@agent`, `ctx.call`, `ctx.sleep`, `ctx.wait_for`, `ctx.call_parallel`, the replay driver, `NonDeterminismError` |
 | `determinism.py` | the import-time warning. A convenience, not the mechanism |
 | `session.py` | the client half of the protocol: one connection, one stream |
 | `serve.py` | `python -m veya.serve agent.py` |
@@ -304,16 +323,16 @@ Not omissions — decisions, with reasons.
 
 | Missing | Why | Arrives |
 |---|---|---|
-| Retry backoff, per-tool retry policy | retries are immediate and the policy is a fixed attempt count. A scheduler with nothing to schedule against would be guesswork | Layer 5 |
-| `effect_seq > 1` | a task performs one tool call, so it is always 1. The numbering exists so sub-effects do not invalidate every key already issued. Layer 4 decided against adding it alongside a second language — one new thing at a time | Layer 5 |
-| Per-task-type lease TTL | an LLM call and a deployment do not deserve the same timeout, but one number is honest until tools differ enough to matter | Layer 5 |
-| A per-step durable clock | `ctx.now()` returns the run's start time. A time that changes between replays goes into a payload and diverges the step after the one that read it; a real one needs durable timers | Layer 5 |
-| `ctx.sleep` / `ctx.wait_for` / cancel / compensate | they are decision kinds `core.Decision` does not have. The protocol gains them when the engine does | Layer 5 |
+| Retry backoff, per-tool retry policy | retries are immediate and the policy is a fixed attempt count. Backoff is "not before time T", which `runs.available_at` now provides | Layer 6 |
+| `effect_seq > 1` | a task performs one tool call, so it is always 1. Fan-out makes more *steps*, each with its own key; sub-effects are what would make a second action inside one step, and shipping both at once gives an unexpected key two causes and no way to bisect | Layer 6 |
+| Per-task-type lease TTL | an LLM call and a deployment do not deserve the same timeout, but one number is honest until tools differ enough to matter | Layer 6 |
+| A per-step durable clock | `ctx.now()` still returns the run's start time. Durable timers made an *instant* recordable, which is what `ctx.sleep` needed; a clock readable at any step is a separate thing, and nothing has asked for it | not planned |
+| Cancellation, compensation | `CANCEL` and `COMPENSATE` are named in the `.proto` and refused by the runtime. Compensation is a sequence of ordinary `CallTool` decisions, so it needs cancellation first and no engine machinery at all | Layer 6 |
 | Auth on the worker port | the project's posture is local and plug-and-play, and a half-built auth story is worse than an absent one. It binds loopback | — |
 | A TypeScript SDK | one language proves the boundary is language-neutral. A second Go client proves it more cheaply, and does, in `gateway/client_test.go` | — |
-| Fan-out / fan-in | needs deterministic child step IDs, which needs the SDK's ordering rules | Layer 5 |
+| HTTP signal ingestion | `veya signal` proves the port. An endpoint adds a server, a bind address and an auth question this project has deliberately not answered | Layer 6 |
 | Outbox retention | published rows accumulate. Trimming belongs with compaction, not scattered | Layer 6 |
-| Per-tool subjects / capability routing | a routing key nothing routes on drifts out of sync with reality unnoticed | Layer 5 |
+| Per-tool subjects / capability routing | a routing key nothing routes on drifts out of sync with reality unnoticed | Layer 6 |
 | `make test-race` on the dev machine | needs a C toolchain, which this machine lacks. CI runs it on every push, with `-count=2` | ✅ CI |
 
 ---
@@ -339,10 +358,17 @@ documentation.
 | `sdk/gateway/client_test.go` → `TestAGoWorkerSpeaksTheSameProtocol` | the guard on Python-shaped assumptions creeping into the runtime |
 | `sdk/python/tests/test_replay.py` → `test_a_wall_clock_in_a_payload_diverges` | the determinism failure, caught by history rather than by the warning |
 | `sdk/python/tests/test_determinism.py` → `test_the_guard_does_not_see_through_a_function_call` | the static check's limit, written down so nobody trusts it as a guarantee |
+| `engine/suspension_test.go` → `TestASleepingRunSurvivesARestart` | the whole stack is killed mid-sleep and rebuilt; the run wakes on schedule |
+| `engine/early_signal_test.go` → `TestEarlyAndLateArrivalProduceTheSameHistory` | there is no early-signal case, because both orderings run identical code |
+| `engine/fanout_join_test.go` → `TestTenChildrenThreeFailuresOneDeterministicOrder` | ten children, three permanent failures, one reproducible ordering |
+| `engine/fanout_replay_test.go` → `TestAFanOutRestartedMidFlightReusesItsChildren` | a re-issued fan-out produces the same children, not a second batch |
+| `core/wait_test.go` → `TestAPastWakeUpIsReadyNotLate` | an overdue park is ready; the alternative loses every timer an outage spanned |
+| `sdk/python/tests/test_replay_suspension.py` → `test_a_body_replays_across_every_suspension_it_has` | a satisfied wait falls through instead of re-suspending |
 
 ```bash
 make test              # unit; no Docker, milliseconds
 make test-integration  # the same suites against live PostgreSQL and NATS
 make sdk-test          # the Python SDK: ruff, mypy, pytest
 make demo-python       # the worked example, both halves, end to end
+make demo-onboarding   # fan-out, a durable timer and a human approval (needs Docker)
 ```

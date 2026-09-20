@@ -1,11 +1,11 @@
 # Project Status and Phase Handoff
 
-**As of:** 20 September 2026 · `main` at `27553ff` · working tree clean
-**Complete:** Layers 1, 2, 3, 4 · **In progress:** Layer 5 — Suspension and fan-out
+**As of:** 20 September 2026 · `main` at `a228ef7` · working tree clean
+**Complete:** Layers 1, 2, 3, 4, 5 · **Next:** Layer 6 — Policy and operability
 
 This is the running status file. It records what is done and verified, what is
-knowingly left open, and what Layer 5 needs before it starts. Update it at the
-end of each phase.
+knowingly left open, and what the next layer needs before it starts. Update it
+at the end of each phase.
 
 - Ideas and reasoning → [architecture-primer.md](architecture-primer.md)
 - Where code lives → [code-map.md](code-map.md)
@@ -63,21 +63,40 @@ end of each phase.
 `core.Decider` and `core.ToolRegistry`, which existed since Layer 1. The one
 engine change was a bug the layer *found* rather than one it needed — see §3.
 
+### Layer 5 — Suspension and fan-out ✅
+
+- [x] Durable timers: `ctx.sleep`, `runs.available_at`, and a recovery scan
+      that is the timer wheel — nothing holds a pending wake-up in memory
+- [x] External signals: stored on arrival, consumed by a `wait_for` that is a
+      read, so the early-signal race has nowhere to happen
+- [x] Fan-out / fan-in: one decision, N children named by invocation order,
+      joined under `ALL`, `ANY` or `QUORUM(k)`
+- [x] `ctx.sleep`, `ctx.wait_for`, `ctx.call_parallel` in the Python SDK
+- [x] `veya signal`, and `veya run show` saying what a run is waiting for
+- [x] `examples/onboarding_agent.py` and `make demo-onboarding`
+
+**What it changed in the runtime.** More than Layer 4 did, and in one place
+that matters: `engine.Advance` gained a `resume` step that runs before the
+decider, and `FailTask` stopped failing a run when a *child* dead-letters. Both
+are described in §3. `effects/`, `outbox/`, `dispatch/`, `lease/` and
+`worker/` are untouched — the ledger did not need to learn about parallelism,
+because children get distinct keys by getting distinct step ids.
+
 ### Verification state
 
 | Check | Result |
 |---|---|
-| `make test` (no Docker) | **169 PASS**, all green |
-| `make sdk-test` (ruff, mypy strict, pytest) | **79 PASS**, all green |
-| `make demo-python` (Go runtime + Python worker) | exit 0, 15 events, 2 ledger rows |
+| `make test` (no Docker) | **254 PASS**, all green |
+| `make test-integration` (PostgreSQL 16 + NATS 2) | **315 PASS**, all green |
+| `make sdk-test` (ruff, mypy strict, pytest) | **112 PASS**, all green |
+| `make demo-python` (Go runtime + Python worker) | exit 0 |
+| `make demo-onboarding` (fan-out + timer + human approval) | exit 0, COMPLETED |
 | `go vet ./...` and `go vet -tags=integration ./...` | clean |
-| `gofmt -l .` | clean |
+| `make proto-check` | clean |
 | `make demo` / `demo-memory` / `demo-jetstream` | complete |
-| Two-process run (runtime `--workers 0` + `veya-worker`) | completes |
-| `make test-integration` (PostgreSQL 16 + NATS 2) | **217 PASS**, all green — re-run locally on 20 September, first time since Layer 3 |
 | `make test-race` | **not run locally** — no C toolchain; CI runs it with `-count=2` |
 
-Size: 78 Go files (~18,700 lines), 16 Python files (~3,600 lines).
+Size: 102 Go files (~24,300 lines), 25 Python files (~5,400 lines).
 
 ### To re-verify from scratch
 
@@ -96,6 +115,7 @@ With Docker:
 make up && make migrate
 make test-integration
 make demo && make demo-jetstream
+make demo-onboarding    # the Layer 5 example: fan-out, a timer, an approval
 ```
 
 **Gotcha that will waste your time:** `PYTHONPATH` must be a *native* path.
@@ -111,6 +131,42 @@ through `cygpath` for this reason. The simpler fix is `make sdk-install`.
 
 Newest first. Each phase's commits are self-contained and the messages carry
 the reasoning, so `git show` is the place to look for *why*.
+
+**Layer 5**
+
+```
+a228ef7 feat(examples): an agent that fans out, sleeps, and waits for a human
+3934af1 test(sdk/python): replay across a suspension
+afedc73 feat(sdk/python): ctx.call_parallel and the join policies
+edffaae feat(sdk/python): ctx.sleep and ctx.wait_for
+242f11c test(engine): the same fan-out replays identically
+4f18f5e fix(engine): a failed child is an outcome, not a failed run
+f48b4e8 feat(engine): join all, any and quorum, with a stated partial-failure policy
+987abf1 feat(engine): dispatch a parallel decision as N tasks in one transaction
+4a6b863 feat(effects): several effects from one decision, through one ledger
+29236c4 feat(core): effect_seq stops being a constant
+9dd6e56 feat(core): child step IDs by invocation order, never completion order
+6b62f93 feat(cmd): send a signal from the CLI
+5046b21 test(engine): a signal that arrives before its wait is not lost
+00ab2e5 feat(engine): WaitForSignal reads, and parks only if there is nothing to read
+7b5c50e feat(store): persist signals on both adapters
+d437cfc feat(core): model a signal, and the port that stores one
+0639d63 feat(cmd): show what a run is waiting for
+fd3e605 test(integration): a real timer on a real clock
+0f180d3 test(engine): a sleeping run survives a restart
+b2d9663 feat(runtime): wake parked runs without holding them in memory
+bc78c7c feat(engine): Sleep parks a run until a wall-clock instant
+f520536 feat(engine): a decision can park a run instead of advancing it
+4a04ee0 feat(store): the recovery scan leaves a waiting run alone
+fac97a7 feat(store): persist available_at on both adapters
+2f4ee46 feat(core): a run can be waiting without being in flight
+29d6258 feat(sdk): map the new decisions to core types
+3d0d887 build(proto): regenerate both languages
+48f8ae8 feat(proto): the whole Layer 5 decision surface, added once
+d382fa6 feat(core): name the new decisions and the join policy
+dab2959 chore: re-verify what Layer 4 could not run locally
+27553ff docs: settle the five questions Layer 5 is blocked on
+```
 
 **Layer 4**
 
@@ -186,117 +242,160 @@ ed10fa6 feat(store): add in-memory adapter, determinism seams, and contract suit
 
 ---
 
-## 3. What Layer 4 settled, and what it found
+## 3. What Layer 5 settled, and what it found
 
 ### Settled, with the argument written down
 
 All five open questions from the previous handoff are answered in
-[worker-protocol.md](worker-protocol.md). The two that shaped everything else:
+[execution-model.md](execution-model.md), written before the code rather than
+after it, because two of them are one-way doors. The three that shaped
+everything else:
 
-1. **Python supplies behaviour, not correctness.** The plan called for a
-   protocol where the Python process claims tasks and drives the ledger —
-   `Claim`, `EffectReserve`, `EffectResolve`. That would give the
-   reserve→commit→act ordering a second implementation in a language with no
-   compiler to check it, and a Python SDK that got it subtly wrong would
-   produce duplicate refunds with the Go ledger looking healthy. So the claim
-   loop, the lease, the fencing token and the ledger stayed in Go. **The cost
-   is real and is written down:** a slow Python tool occupies a Go worker slot
-   for its whole duration, so scaling the Python side alone does not scale
-   throughput. You scale `veya-worker` processes alongside it.
+1. **A suspension is a column, not a state.** A run waiting on a timer is
+   RUNNING with nothing in flight — which is exactly what `RunsAwaitingAdvance`
+   returns, so without a change the recovery scan would advance every sleeping
+   run on every pass. A `WAITING` run state looks tidier and costs more: run
+   state lives in `core`, in both adapters, in the CLI's output and in every
+   transition assertion written since Layer 1, and it buys nothing, because a
+   waiting run *is* still running. The column is one predicate in one query,
+   and it generalises — a signal wait and a retry backoff are both "not before
+   time T".
 
-2. **A model call needs no new machinery.** It is an effect, this system has
-   exactly one way to perform an effect durably, and an agent reaches a model
-   through `ctx.call` like anything else. The decision replays because its
-   *input* is recorded. There is no `DECISION_RECORDED` event, because it
-   would be a weaker second copy of a fact history already holds.
+2. **A signal is stored on arrival, and a wait is a read.** The bug everyone
+   writes here is the early signal: a callback arrives before the run reaches
+   its `wait_for`, finds no waiter, and is dropped, and the run waits forever
+   for something that already happened. It is a race, so it passes every test
+   written by someone who has not thought about it and fails in production
+   under load. Storing deletes the race rather than narrowing it: there is no
+   delivery path at all, so early and late arrival run identical code and the
+   case that is hard to reproduce is the one that is always exercised.
+
+3. **The engine decides when a join is finished, never what it means.** `ALL`,
+   `ANY` and `QUORUM(k)` each have two exits, and the second — every child
+   failed, or too few left for a quorum to be possible — is the one that gets
+   forgotten. A join satisfiable only by success hangs forever on a bad day.
+   But whether three failures out of ten is a disaster or a Tuesday is a
+   question about the agent, so every outcome goes back to the body in
+   invocation order and the body decides.
+
+**The cost that is real and is written down:** an agent cannot fan out and
+sleep in one turn. It joins, then suspends on the next decision — one more
+round trip, and a history that reads in the order things happened. That
+constraint is load-bearing: it is why a run waits on time *or* on tasks and
+never both, which is why suspension is one nullable column.
 
 ### Found, and fixed
 
-Three bugs surfaced by building the layer rather than by reviewing it:
-
 | Found by | Bug | Fix |
 |---|---|---|
-| Writing the end-to-end test | `engine.Advance` failed a run on *any* decider error. So a runtime started before its workers destroyed every run in that window, and a rolling deploy destroyed every in-flight run of the previous version — permanently, for a condition that fixes itself by waiting | `core.ErrUnavailable`. A decider returning it leaves the run RUNNING for the recovery loop; anything else still fails the run (`b24ffd7`) |
-| Running `make demo-python` | The gateway's shutdown never returned. `GracefulStop` waits for every RPC, and a worker session is a stream open for the worker's whole life — so it waited for every worker to disconnect, which an idle one never does. Took 87 seconds and a SIGKILL to notice | bounded drain: graceful, then `Stop` (`ac66852`) |
-| Writing the SDK's test suite | A step recorded as created but not completed returned `None` to the agent body instead of suspending. The body computed with that `None` and raised `NonDeterminismError` about code the author had not written wrongly | suspend instead; task creation is idempotent per (run, step) (`a38a21f`) |
+| Writing `TestTenChildrenThreeFailuresOneDeterministicOrder` | A dead-lettered task failed the whole run. Right before fan-out — one step was in flight at a time, so a step that would never complete was a run that could never proceed — and wrong after it, where a child is one outcome among several | A dead-lettered *child* advances the run; a top-level step still fails it. Escalation stays fatal in both shapes, because an escalated effect's outcome is unknown and carrying on is how a run acts twice on something nobody has looked at (`4f18f5e`) |
+| Writing the engine's `WaitForSignal` case | Parking on a signal that had *already arrived* parked forever. The release happens on arrival, and arrival had happened, so nothing was left to wake the run — the early-signal bug, one level up | Park, then look immediately in the same advance, via `Advance` rather than an inline check, so a stored signal is consumed by exactly the code that consumes a late one (`00ab2e5`) |
+| Writing `examples/onboarding_agent.py` | The fake mail provider took a non-reentrant lock and then called a helper that took it again. It presents as a task stuck in RUNNING with an `EFFECT_CREATED` and nothing after it | The helper is documented as being called with the lock held. Worth keeping because the symptom is indistinguishable from a worker that vanished mid-call, which is exactly what the ledger is meant to look like when an outcome is genuinely unknown (`a228ef7`) |
 
-Plus one in the determinism guard itself: it resolved names only through module
-globals, so an agent declared inside a factory function passed silently. It now
-resolves free variables too. A check that is trusted and has a hole is worse
-than no check.
+Plus one in a test rather than in the code: the first draft of the Python
+replay harness parked runs at an instant of its own choosing rather than the
+one the decision asked for, and the step-by-step walk caught it. That is the
+same bug a real engine would have if it rounded or defaulted a wake-up.
+
+### Deviations from the plan, and why
+
+- **`effect_seq` is still 1.** The plan's exit criteria say it should no longer
+  be. That bullet predates the plan's own §2.5, which defers sub-effects — and
+  sub-effects are the only thing that puts a second external action inside one
+  step. Fan-out makes more *steps*, each with its own key. What this layer did
+  instead is stop the sequence being a package constant, so adding sub-effects
+  later changes a caller rather than a constant, and pin the keys already
+  issued with a literal-valued regression test. The argued decision won over
+  the inherited bullet.
+- **32 commits became 31.** Plan commits 22 and 23 both turned out to be about
+  `effect_seq` and the ledger under fan-out, and the ledger needed no change —
+  children get distinct keys by getting distinct step ids. They became one
+  `feat(core)` commit and one `feat(effects)` commit of tests plus a contract.
+  The `fix(engine)` above was not in the plan at all.
 
 ---
 
-## 4. Open items carried into Layer 5
+## 4. Open items carried into Layer 6
 
-Nothing here blocks Layer 5. Ordered by how likely it is to bite.
+Nothing here blocks Layer 6. Ordered by how likely it is to bite.
 
 | # | Item | Why it is open | Cost to fix |
 |---|---|---|---|
-| 1 | **`effect_seq` is still always 1** | Layer 4 deliberately did not add sub-effects alongside a second language — one new thing at a time. Fan-out is what makes the numbering real, and the key format has carried the field since Layer 2 so nothing already issued is invalidated | `internal/effects.effectSeq` is the one constant; Layer 5 |
-| 2 | **`ctx.now()` is the run's start time** | a clock that changes between replays goes into a payload and diverges the step *after* the one that read it. The honest alternative needs durable timers | Layer 5, with timers |
-| 3 | **A slow Python tool holds a Go worker slot** | the price of one implementation of the ordering rule; see §3 and worker-protocol.md §2.1. Mitigated by running more `veya-worker` processes | not planned; revisit if it binds |
-| 4 | **No retry backoff or per-tool policy** | retries are immediate with a fixed three-attempt limit. A scheduler with nothing to schedule against would be guesswork | Layer 5 |
-| 5 | **One lease TTL for all task types** | an LLM call and a deployment do not deserve the same timeout, but one number is honest until tools differ enough to matter. Layer 4 made this more visible: a Python tool's latency is now somebody else's code | Layer 5 |
-| 6 | **One subject for every delivery** | `core.DeliverySubject` is a single constant. A routing key that nothing routes on drifts out of sync unnoticed | Layer 5 |
-| 7 | **No auth on the worker port** | deliberate, and stated rather than half-built. It binds loopback; an operator widening it is doing so having read README §7.3 | not planned |
-| 8 | **Outbox rows are never trimmed** | published rows accumulate forever. Trimming belongs with compaction and retention | Layer 6 |
-| 9 | **`redis` dispatch adapter absent** | only ever intended as a benchmark comparison | Layer 7 |
+| 1 | **No cancellation** | `CANCEL` is named in the `.proto` and refused by the runtime. It is about the effect ledger rather than about suspension: mark `CANCELLED`, stop dispatching, let in-flight effects land and be recorded. It interacts with fan-out — cancelling a run with eight children in flight — which is why it waited until fan-out existed | Layer 6 |
+| 2 | **No retry backoff or per-tool policy** | retries are immediate with a fixed three-attempt limit. Backoff is "not before time T", which `runs.available_at` now provides, so this is policy on the tool descriptor next to `KeyTTL` rather than new machinery | Layer 6 |
+| 3 | **No compensation** | settled as a sequence of ordinary `CallTool` decisions, so it is an SDK convention and a decider habit, not engine work. It needs cancellation first, since the thing that triggers a rollback is usually a cancel | Layer 6 |
+| 4 | **`effect_seq` is still always 1** | see §3. Fan-out made child *step* ids real; sub-effects are the separate feature, and shipping both at once gives an unexpected key two candidate causes and no way to bisect | Layer 6 |
+| 5 | **Signals arrive only through the CLI** | `veya signal` proves the port, and an HTTP endpoint would call the same `engine.DeliverSignal`. What it adds is a server, a bind address and an auth question this project has deliberately not answered | Layer 6, with the dashboard |
+| 6 | **A satisfied `ANY` leaves siblings running** | they are not cancelled, their effects land, and they are recorded. That is correct — a ledger with an orphan in it is worse than a slow child — but it means a run can complete with work still in flight, and its history gains `TASK_COMPLETED` events after `RUN_COMPLETED` | fixed by #1, not before |
+| 7 | **A slow Python tool holds a Go worker slot** | the price of one implementation of the ordering rule; see worker-protocol.md §2.1. Mitigated by running more `veya-worker` processes | not planned; revisit if it binds |
+| 8 | **One lease TTL for all task types** | an LLM call and a deployment do not deserve the same timeout. More visible now that a fan-out puts ten tools in flight at once | Layer 6 |
+| 9 | **No auth on the worker port** | deliberate, and stated rather than half-built. It binds loopback | not planned |
+| 10 | **Outbox rows are never trimmed** | published rows accumulate forever. Trimming belongs with compaction | Layer 6 |
+| 11 | **`signals` rows are never trimmed either** | same shape as #10, and now the same size problem: a run that takes a hundred callbacks keeps a hundred rows after it finishes | Layer 6, with #10 |
 
-Resolved since the last handoff: the store contract suite now takes a scratch
-database (`35af687`), and `make test-race` runs in CI on every push
-(`573be73`).
+Resolved since the last handoff: the integration suite runs locally again
+(`dab2959`), and all five of Layer 5's blocking questions are answered
+(`27553ff`).
 
 ---
 
-## 5. Layer 5 — what it is, and what it needs
+## 5. Layer 6 — what it is, and what it needs
 
-**Goal:** the execution model handles real agent shapes, not just linear
-sequences.
+**Goal:** the policies that sit on top of the execution model, and enough
+operability to run the thing without reading the database by hand.
 
 Roadmap items:
 
-- [ ] Fan-out / fan-in with deterministic child step IDs
-- [ ] Durable timers and external signals
-- [ ] Cancellation and compensation hooks
-- [ ] Retry policies, backoff, dead-letter handling
+- [ ] Cancellation, and compensation as a decider convention
+- [ ] Retry policy, backoff, dead-letter handling, deadline propagation
+- [ ] HTTP signal ingestion
+- [ ] Compaction, snapshots, retention — including the outbox and signals
+- [ ] Local dashboard: run timeline, stuck-run detection, effect audit
+- [ ] Metrics and tracing
 
 ### 5.1 What is already in place for it
 
-| Seam | Where | Layer 5 uses it to |
+| Seam | Where | Layer 6 uses it to |
 |---|---|---|
-| `StepID.Child(n)` | `internal/core/ids.go` | number fan-out children by invocation order — one definition, unused until now |
-| `effect_seq` in the key format | `internal/core/effect.go` | let one step declare several sub-effects without invalidating a key |
-| `core.Decision` | `internal/core/decision.go` | gains `CallToolParallel`, `Sleep`, `WaitForSignal`, `Cancel`, `Compensate` |
-| `pb.DecisionKind` | `proto/veya/worker/v1/worker.proto` | the same, on the wire. Add enum values; never renumber |
-| `ctx.call` | `sdk/python/veya/agent.py` | the shape `ctx.sleep` / `ctx.wait_for` copy: suspend, and resume from history |
-| `core.ErrUnavailable` | `internal/core/errors.go` | a run waiting on a timer or a signal is not a failed run, and the engine already knows the difference |
-| `tool.KeyTTL` | `internal/core/tool.go` | per-tool policy already lives on the descriptor; retry policy joins it there rather than in a switch |
+| `runs.available_at` | migration `0003` | back a retry off, and bound a deadline — both are "not before time T", and the column and its index already exist |
+| `Store.NextWakeUp` | `core/ports.go` | wake on a backoff sooner than the scan interval, with nothing held in memory |
+| `core.Wait` / `PendingWait` | `core/wait.go` | describe why a run is parked, which a dashboard needs and the CLI already prints |
+| `engine.DeliverSignal` | `engine/signals.go` | an HTTP endpoint calls this and adds nothing else |
+| `tool.KeyTTL` | `core/tool.go` | per-tool policy already lives on the descriptor; retry policy joins it there rather than in a switch |
+| `DECISION_KIND_CANCEL` / `COMPENSATE` | the `.proto` | already numbered, already refused by name. Layer 6 implements them without touching the wire contract |
+| `core.FanOut` | `core/join.go` | know which children are in flight when a run is cancelled |
+| `TaskFailedData.Final` | `core/event.go` | distinguish a retryable attempt from a settled failure, which a backoff policy needs and the join already uses |
 
-### 5.2 Decisions Layer 5 had to make first
+### 5.2 Decisions Layer 6 has to make first
 
-All five are settled, with the argument, in
-[execution-model.md](execution-model.md). In one line each:
+1. **What cancelling a run with children in flight means.** Mark the run
+   `CANCELLED` and let the children land, or stop dispatching and dead-letter
+   them? The first keeps the ledger honest and leaves external actions
+   happening after the run ended; the second needs a story for an effect that
+   was already `RUNNING`. Open item #6 is this question wearing a different
+   hat.
 
-| # | Question | Answer |
-|---|---|---|
-| 1 | Where a suspension lives | a nullable `available_at` on `runs` and one predicate in `RunsAwaitingAdvance`, not a `WAITING` run state |
-| 2 | What a parallel decision looks like on the wire | `repeated ToolCall` inside one `Decision`, with a `JoinPolicy`, not `repeated Decision` |
-| 3 | How a signal reaches a waiting run | stored on arrival keyed `(run_id, signal_id)`; `wait_for` is a read, so early and late arrival run the same code |
-| 4 | Whether compensation is a decision or a mode | ordinary `CallTool` decisions the decider emits; the engine keeps knowing nothing about meaning |
-| 5 | Whether Python gets `effect_seq` now | no. Fan-out makes child *step* IDs real; sub-effects stay deferred |
+2. **Where retry policy lives on the descriptor.** `KeyTTL` is a duration and
+   a precedent, but backoff is a curve plus a cap plus a jitter, and a
+   `RetryPolicy` struct on `ToolDescriptor` is a bigger thing to make public
+   than one field.
 
-The same document writes down join semantics for a partially-complete fan-out,
-which the plan named as the sequencing risk: it is cheap to state now and a
-migration to discover later.
+3. **Whether a dead-lettered child should be retryable by hand.** The CLI can
+   already resolve an effect; it cannot re-arm a task. A fan-out where one
+   child failed and nine succeeded is exactly the case where somebody wants to
+   fix the provider and push one button.
 
-### 5.3 Entry criteria
+4. **What compaction may throw away.** History is the authority for replay, so
+   compacting it is compacting the thing everything else is derived from. A
+   snapshot has to be re-derivable, or it is a second source of truth.
 
-- [x] `make test-integration` green on a machine with Docker — **217 PASS**,
-      re-run on 20 September, first time since Layer 3
-- [x] Suspension model chosen and written down (5.2 #1)
-- [x] Parallel decision shape chosen (5.2 #2), since the `.proto` is public
-- [x] Join semantics for a partially-complete fan-out written down
+### 5.3 Suggested entry criteria
+
+- [ ] Cancellation semantics for a run with children in flight written down
+      (5.2 #1), because it is the one that can invalidate work
+- [ ] `make test-integration` green — it is, as of this handoff
+- [ ] A decision on whether `RetryPolicy` is public API (5.2 #2), since the
+      tool descriptor is what every agent author touches
 
 ---
 
@@ -312,6 +411,7 @@ migration to discover later.
 | NATS | container on :4222, monitoring on :8222 (needs `-m 8222`) |
 | Worker gateway | **:50551**, loopback only by default |
 | DSN | `postgres://veya:veya@localhost:5433/veya?sslmode=disable` |
-| Migrations | forward-only, embedded; `0001_init.sql`, `0002_outbox_relay.sql` |
+| Migrations | forward-only, embedded; `0001_init.sql`, `0002_outbox_relay.sql`, `0003_run_suspension.sql`, `0004_signals.sql` |
 | CI | `.github/workflows/ci.yml` — vet + gofmt + proto drift, race detector, Python SDK on 3.10 and 3.13, the worked example, and the integration suite |
+| Demos needing Docker | `make demo`, `demo-jetstream`, `demo-onboarding`. The onboarding one needs PostgreSQL because a signal must come from outside the runtime process |
 | Shell | Windows; git is set to `core.autocrlf=true`, so the repo stores LF and the worktree has CRLF. `gofmt -l` occasionally flags a file for that reason alone |
