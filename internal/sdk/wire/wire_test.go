@@ -205,12 +205,7 @@ func TestDecisionRequiresWhatItsKindNeeds(t *testing.T) {
 			"no step id",
 		},
 		{
-			"cancel, which this build does not implement",
-			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_CANCEL},
-			"not one this build knows",
-		},
-		{
-			"compensate, likewise",
+			"compensate, which this build does not implement",
 			&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_COMPENSATE},
 			"not one this build knows",
 		},
@@ -329,6 +324,33 @@ func TestFailWithNoReasonStillFails(t *testing.T) {
 	}
 	if got.Error == "" {
 		t.Fatal("a failure with no reason must still carry something an operator can read")
+	}
+}
+
+// TestCancelCarriesItsReason. Unlike FAIL, a CANCEL with no reason is left
+// unexplained rather than given an invented one: cancelling for no stated
+// reason is itself something a body can mean.
+func TestCancelCarriesItsReason(t *testing.T) {
+	got, err := wire.Decision(&pb.Decision{
+		Kind:         pb.DecisionKind_DECISION_KIND_CANCEL,
+		CancelReason: "the customer withdrew the request",
+	})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if got.Kind != core.DecideCancel {
+		t.Fatalf("Kind = %s, want %s", got.Kind, core.DecideCancel)
+	}
+	if got.Reason != "the customer withdrew the request" {
+		t.Fatalf("Reason = %q", got.Reason)
+	}
+
+	unexplained, err := wire.Decision(&pb.Decision{Kind: pb.DecisionKind_DECISION_KIND_CANCEL})
+	if err != nil {
+		t.Fatalf("Decision: %v", err)
+	}
+	if unexplained.Reason != "" {
+		t.Fatalf("Reason = %q, want an unexplained cancel left as such", unexplained.Reason)
 	}
 }
 

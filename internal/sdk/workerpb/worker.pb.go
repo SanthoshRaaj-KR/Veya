@@ -207,10 +207,11 @@ func (JoinKind) EnumDescriptor() ([]byte, []int) {
 
 // DecisionKind is what the agent decided to do next.
 //
-// The whole Layer 5 surface is added here at once, including CANCEL and
-// COMPENSATE, which the runtime does not implement yet and refuses as
-// "not one this build knows". Adding an enum value later is free; renumbering
-// one never is, and this contract is public from its first commit.
+// The whole Layer 5 surface was added here at once, including CANCEL and
+// COMPENSATE, before the runtime implemented either — a build that meets one
+// early refuses it as "not one this build knows" rather than misreading it as
+// something else. Adding an enum value later is free; renumbering one never
+// is, and this contract is public from its first commit.
 type DecisionKind int32
 
 const (
@@ -221,9 +222,15 @@ const (
 	DecisionKind_DECISION_KIND_CALL_TOOL_PARALLEL DecisionKind = 4
 	DecisionKind_DECISION_KIND_SLEEP              DecisionKind = 5
 	DecisionKind_DECISION_KIND_WAIT_FOR_SIGNAL    DecisionKind = 6
-	// Reserved for Layer 6. Named now so the numbering is settled; a runtime
-	// that meets one refuses it rather than misreading it as something else.
-	DecisionKind_DECISION_KIND_CANCEL     DecisionKind = 7
+	// Layer 6. Cancellation is cooperative and forward-looking: it prevents the
+	// *next* durable step, does not interrupt an effect already in flight, and
+	// does not reverse one already committed. See docs/execution-model.md
+	// section 8 and README section 11.
+	DecisionKind_DECISION_KIND_CANCEL DecisionKind = 7
+	// Still reserved. Compensation is an SDK convention over ordinary
+	// CALL_TOOL decisions (a body issuing inverse calls after a CANCEL), not
+	// engine work, so it needs no wire representation of its own. Kept in the
+	// enum so a client that sends it gets a named refusal instead of silence.
 	DecisionKind_DECISION_KIND_COMPENSATE DecisionKind = 8
 )
 
@@ -1075,7 +1082,10 @@ type Decision struct {
 	// Set when kind is SLEEP: the instant to wake at.
 	WakeAtUnixNano int64 `protobuf:"varint,9,opt,name=wake_at_unix_nano,json=wakeAtUnixNano,proto3" json:"wake_at_unix_nano,omitempty"`
 	// Set when kind is WAIT_FOR_SIGNAL.
-	Signal        *SignalWait `protobuf:"bytes,10,opt,name=signal,proto3" json:"signal,omitempty"`
+	Signal *SignalWait `protobuf:"bytes,10,opt,name=signal,proto3" json:"signal,omitempty"`
+	// Set when kind is CANCEL. Recorded on RUN_CANCELLED for an operator
+	// reading history later; the engine does not act on its contents.
+	CancelReason  string `protobuf:"bytes,11,opt,name=cancel_reason,json=cancelReason,proto3" json:"cancel_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1178,6 +1188,13 @@ func (x *Decision) GetSignal() *SignalWait {
 		return x.Signal
 	}
 	return nil
+}
+
+func (x *Decision) GetCancelReason() string {
+	if x != nil {
+		return x.CancelReason
+	}
+	return ""
 }
 
 // ToolCall is one invocation inside a parallel decision.
@@ -2191,7 +2208,7 @@ const file_veya_worker_v1_worker_proto_rawDesc = "" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x126\n" +
 	"\bdecision\x18\x02 \x01(\v2\x18.veya.worker.v1.DecisionH\x00R\bdecision\x123\n" +
 	"\afailure\x18\x03 \x01(\v2\x17.veya.worker.v1.FailureH\x00R\afailureB\t\n" +
-	"\aoutcome\"\xf0\x02\n" +
+	"\aoutcome\"\x95\x03\n" +
 	"\bDecision\x120\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x1c.veya.worker.v1.DecisionKindR\x04kind\x12\x17\n" +
 	"\astep_id\x18\x02 \x01(\tR\x06stepId\x12\x12\n" +
@@ -2203,7 +2220,8 @@ const file_veya_worker_v1_worker_proto_rawDesc = "" +
 	"\x04join\x18\b \x01(\v2\x1a.veya.worker.v1.JoinPolicyR\x04join\x12)\n" +
 	"\x11wake_at_unix_nano\x18\t \x01(\x03R\x0ewakeAtUnixNano\x122\n" +
 	"\x06signal\x18\n" +
-	" \x01(\v2\x1a.veya.worker.v1.SignalWaitR\x06signal\"8\n" +
+	" \x01(\v2\x1a.veya.worker.v1.SignalWaitR\x06signal\x12#\n" +
+	"\rcancel_reason\x18\v \x01(\tR\fcancelReason\"8\n" +
 	"\bToolCall\x12\x12\n" +
 	"\x04tool\x18\x01 \x01(\tR\x04tool\x12\x18\n" +
 	"\apayload\x18\x02 \x01(\fR\apayload\"R\n" +

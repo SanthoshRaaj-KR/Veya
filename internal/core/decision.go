@@ -35,6 +35,14 @@ const (
 	// DecideWaitForSignal parks the run until a named signal arrives, or
 	// until its deadline passes.
 	DecideWaitForSignal DecisionKind = "WAIT_FOR_SIGNAL"
+
+	// DecideCancel ends the run in RunCancelled rather than RunFailed or
+	// RunCompleted. It is cooperative and forward-looking: it prevents the
+	// *next* durable step, not an effect already in flight, and it does not
+	// reverse one already committed. See README section 11 and
+	// docs/execution-model.md section 8. Reversing a committed effect is an
+	// authored compensation, not something this decision does.
+	DecideCancel DecisionKind = "CANCEL"
 )
 
 // IsSuspension reports whether a decision parks the run rather than advancing
@@ -197,6 +205,11 @@ type Decision struct {
 
 	// Set when Kind is DecideFail.
 	Error string
+
+	// Set when Kind is DecideCancel. Recorded on RunCancelledData for an
+	// operator reading history later; the engine does not act on its
+	// contents.
+	Reason string
 }
 
 // Decider answers "what happens next in this run?" given durable history.

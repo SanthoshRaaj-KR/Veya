@@ -245,11 +245,18 @@ func Decision(d *pb.Decision) (core.Decision, error) {
 		}
 		return core.Decision{Kind: core.DecideFail, Error: reason}, nil
 
+	case pb.DecisionKind_DECISION_KIND_CANCEL:
+		// Unlike FAIL, an unexplained CANCEL is left unexplained rather than
+		// given an invented reason: cancelling for no stated reason is itself
+		// something a body can mean, where failing for no reason reads as a
+		// decider that forgot to say why.
+		return core.Decision{Kind: core.DecideCancel, Reason: d.GetCancelReason()}, nil
+
 	default:
-		// Includes CANCEL and COMPENSATE, which the .proto names so that
-		// Layer 6 does not have to renumber, and which this build has no
-		// machinery for. Refusing them by name beats accepting them into a
-		// switch that would silently fall through to doing nothing.
+		// Still includes COMPENSATE, which the .proto names so that a later
+		// layer does not have to renumber, and which this build has no
+		// machinery for. Refusing it by name beats accepting it into a switch
+		// that would silently fall through to doing nothing.
 		return core.Decision{}, fmt.Errorf("%w: decision kind %q is not one this build knows",
 			ErrProtocol, d.GetKind().String())
 	}

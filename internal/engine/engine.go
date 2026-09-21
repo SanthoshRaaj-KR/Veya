@@ -301,6 +301,19 @@ func (e *Engine) Advance(ctx context.Context, runID core.RunID) error {
 			LastError: decision.Error,
 		}, core.EventRunFailed, core.RunFailedData{Error: decision.Error})
 
+	case core.DecideCancel:
+		// finish is the whole implementation. It stops dispatching by never
+		// calling dispatch or dispatchParallel again -- Advance's terminal
+		// check at the top refuses to ask this run's decider anything once
+		// this commits -- and it does nothing to whatever is already in
+		// flight, which is correct: an effect underway is not interrupted and
+		// one already committed is not reversed. A child that lands after
+		// this event is recorded after it, the same as one that lands after
+		// RUN_COMPLETED under an ANY join. See docs/execution-model.md §7.4.
+		return e.finish(ctx, run, core.RunState{
+			Status: core.RunCancelled,
+		}, core.EventRunCancelled, core.RunCancelledData{Reason: decision.Reason})
+
 	default:
 		return fmt.Errorf("advance %s: unknown decision kind %q", runID, decision.Kind)
 	}

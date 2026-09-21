@@ -202,6 +202,10 @@ message Decision {
 
   // Set when kind is WAIT_FOR_SIGNAL.
   SignalWait signal = 10;
+
+  // Set when kind is CANCEL. Recorded on RUN_CANCELLED for an operator
+  // reading history later; the engine does not act on its contents.
+  string cancel_reason = 11;
 }
 
 // ToolCall is one invocation inside a parallel decision.
@@ -262,10 +266,11 @@ message SignalWait {
 
 // DecisionKind is what the agent decided to do next.
 //
-// The whole Layer 5 surface is added here at once, including CANCEL and
-// COMPENSATE, which the runtime does not implement yet and refuses as
-// "not one this build knows". Adding an enum value later is free; renumbering
-// one never is, and this contract is public from its first commit.
+// The whole Layer 5 surface was added here at once, including CANCEL and
+// COMPENSATE, before the runtime implemented either — a build that meets one
+// early refuses it as "not one this build knows" rather than misreading it as
+// something else. Adding an enum value later is free; renumbering one never
+// is, and this contract is public from its first commit.
 enum DecisionKind {
   DECISION_KIND_UNSPECIFIED = 0;
   DECISION_KIND_CALL_TOOL = 1;
@@ -276,9 +281,16 @@ enum DecisionKind {
   DECISION_KIND_SLEEP = 5;
   DECISION_KIND_WAIT_FOR_SIGNAL = 6;
 
-  // Reserved for Layer 6. Named now so the numbering is settled; a runtime
-  // that meets one refuses it rather than misreading it as something else.
+  // Layer 6. Cancellation is cooperative and forward-looking: it prevents the
+  // *next* durable step, does not interrupt an effect already in flight, and
+  // does not reverse one already committed. See docs/execution-model.md
+  // section 8 and README section 11.
   DECISION_KIND_CANCEL = 7;
+
+  // Still reserved. Compensation is an SDK convention over ordinary
+  // CALL_TOOL decisions (a body issuing inverse calls after a CANCEL), not
+  // engine work, so it needs no wire representation of its own. Kept in the
+  // enum so a client that sends it gets a named refusal instead of silence.
   DECISION_KIND_COMPENSATE = 8;
 }
 

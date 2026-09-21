@@ -162,7 +162,7 @@ class DecideResult(_message.Message):
     def __init__(self, call_id: _Optional[str] = ..., decision: _Optional[_Union[Decision, _Mapping]] = ..., failure: _Optional[_Union[Failure, _Mapping]] = ...) -> None: ...
 
 class Decision(_message.Message):
-    __slots__ = ("kind", "step_id", "tool", "payload", "output", "error", "calls", "join", "wake_at_unix_nano", "signal")
+    __slots__ = ("kind", "step_id", "tool", "payload", "output", "error", "calls", "join", "wake_at_unix_nano", "signal", "cancel_reason")
     KIND_FIELD_NUMBER: _ClassVar[int]
     STEP_ID_FIELD_NUMBER: _ClassVar[int]
     TOOL_FIELD_NUMBER: _ClassVar[int]
@@ -173,6 +173,7 @@ class Decision(_message.Message):
     JOIN_FIELD_NUMBER: _ClassVar[int]
     WAKE_AT_UNIX_NANO_FIELD_NUMBER: _ClassVar[int]
     SIGNAL_FIELD_NUMBER: _ClassVar[int]
+    CANCEL_REASON_FIELD_NUMBER: _ClassVar[int]
     kind: DecisionKind
     step_id: str
     tool: str
@@ -183,7 +184,8 @@ class Decision(_message.Message):
     join: JoinPolicy
     wake_at_unix_nano: int
     signal: SignalWait
-    def __init__(self, kind: _Optional[_Union[DecisionKind, str]] = ..., step_id: _Optional[str] = ..., tool: _Optional[str] = ..., payload: _Optional[bytes] = ..., output: _Optional[bytes] = ..., error: _Optional[str] = ..., calls: _Optional[_Iterable[_Union[ToolCall, _Mapping]]] = ..., join: _Optional[_Union[JoinPolicy, _Mapping]] = ..., wake_at_unix_nano: _Optional[int] = ..., signal: _Optional[_Union[SignalWait, _Mapping]] = ...) -> None: ...
+    cancel_reason: str
+    def __init__(self, kind: _Optional[_Union[DecisionKind, str]] = ..., step_id: _Optional[str] = ..., tool: _Optional[str] = ..., payload: _Optional[bytes] = ..., output: _Optional[bytes] = ..., error: _Optional[str] = ..., calls: _Optional[_Iterable[_Union[ToolCall, _Mapping]]] = ..., join: _Optional[_Union[JoinPolicy, _Mapping]] = ..., wake_at_unix_nano: _Optional[int] = ..., signal: _Optional[_Union[SignalWait, _Mapping]] = ..., cancel_reason: _Optional[str] = ...) -> None: ...
 
 class ToolCall(_message.Message):
     __slots__ = ("tool", "payload")

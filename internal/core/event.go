@@ -20,6 +20,14 @@ const (
 	EventRunCompleted  EventType = "RUN_COMPLETED"
 	EventRunFailed     EventType = "RUN_FAILED"
 
+	// EventRunCancelled records a CANCEL decision. It is cooperative and
+	// forward-looking, like the decision that produces it: recorded after
+	// whatever step the body was on, and binding on nothing already in
+	// flight. A child dispatched before this event lands its outcome after
+	// it, the same way one does after RUN_COMPLETED under an ANY join — see
+	// docs/execution-model.md section 7.4.
+	EventRunCancelled EventType = "RUN_CANCELLED"
+
 	EventTaskRetryScheduled EventType = "TASK_RETRY_SCHEDULED"
 	EventTaskDeadLettered   EventType = "TASK_DEAD_LETTERED"
 
@@ -175,6 +183,10 @@ type (
 
 	RunFailedData struct {
 		Error string `json:"error"`
+	}
+
+	RunCancelledData struct {
+		Reason string `json:"reason,omitempty"`
 	}
 
 	TaskRetryScheduledData struct {
