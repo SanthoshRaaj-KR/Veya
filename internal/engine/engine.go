@@ -39,6 +39,7 @@ type Engine struct {
 	ids          core.IDGen
 	clock        core.Clock
 	leaseTTL     time.Duration
+	retry        core.RetryPolicy
 	agent        string
 	agentVersion string
 	wake         func()
@@ -62,6 +63,11 @@ type Config struct {
 	// TTLs arrive in Layer 6, when an LLM call and a deployment stop deserving
 	// the same timeout.
 	LeaseTTL time.Duration
+
+	// Retry is engine-wide, not per tool, for the reason RetryPolicy's own
+	// doc comment gives. The zero value is exactly today's behaviour: 3
+	// attempts, immediate retry, unchanged from before this field existed.
+	Retry core.RetryPolicy
 
 	// Agent names the agent this engine serves, and AgentVersion is pinned
 	// onto every run it starts. Runs for any other agent are left alone.
@@ -118,11 +124,23 @@ func New(cfg Config) (*Engine, error) {
 		ids:          cfg.IDGen,
 		clock:        cfg.Clock,
 		leaseTTL:     leaseTTL,
+		retry:        cfg.Retry,
 		agent:        cfg.Agent,
 		agentVersion: cfg.AgentVersion,
 		wake:         wake,
 		log:          log,
 	}, nil
+}
+
+// maxAttempts resolves the configured retry policy's attempt budget, falling
+// back to defaultMaxAttempts when it was left unset — the same fallback
+// FailTask has always applied, now named so dispatch and FailTask cannot
+// disagree about it.
+func (e *Engine) maxAttempts() int {
+	if e.retry.MaxAttempts > 0 {
+		return e.retry.MaxAttempts
+	}
+	return defaultMaxAttempts
 }
 
 // Agent reports which agent this engine serves.
@@ -344,7 +362,7 @@ func (e *Engine) dispatch(ctx context.Context, run core.Run, d core.Decision) er
 			Type:        d.TaskType,
 			Payload:     d.Payload,
 			Status:      core.TaskPending,
-			MaxAttempts: defaultMaxAttempts,
+			MaxAttempts: e.maxAttempts(),
 		}
 		if err := tx.CreateTask(ctx, task); err != nil {
 			return err
@@ -356,7 +374,7 @@ func (e *Engine) dispatch(ctx context.Context, run core.Run, d core.Decision) er
 		}); err != nil {
 			return err
 		}
-		return tx.EnqueueDelivery(ctx, taskID)
+		return tx.EnqueueDelivery(ctx, taskID, time.Time{})
 	})
 
 	switch {

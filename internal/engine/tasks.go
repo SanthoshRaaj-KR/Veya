@@ -133,20 +133,21 @@ func (e *Engine) CompleteTask(ctx context.Context, id core.TaskID, token core.Fe
 
 // FailTask records a failed tool call, then either retries it or gives up.
 //
-// Retries are immediate and the policy is a fixed attempt count. Backoff,
-// jitter, and per-tool policy arrive in Layer 6; pretending to have them now
-// would mean writing a scheduler with nothing to schedule against.
-// An escalated outcome is never retried. Retrying would mean either calling a
-// provider that may already have acted, or burning attempts until the task
-// dead-letters anyway — both noise on top of a situation that already needs a
-// person. It goes straight to DEAD_LETTER so the run fails visibly and the
-// unresolved effect stays on the books.
+// The policy is a fixed attempt count plus whatever backoff curve
+// core.RetryPolicy computes from the attempt just made — engine-wide, not per
+// tool; see RetryPolicy's own doc comment for why. An escalated outcome is
+// never retried. Retrying would mean either calling a provider that may
+// already have acted, or burning attempts until the task dead-letters anyway
+// — both noise on top of a situation that already needs a person. It goes
+// straight to DEAD_LETTER so the run fails visibly and the unresolved effect
+// stays on the books.
 func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.FencingToken, cause error) error {
 	var (
-		runID   core.RunID
-		stepID  core.StepID
-		retry   bool
-		attempt int
+		runID     core.RunID
+		stepID    core.StepID
+		retry     bool
+		attempt   int
+		notBefore time.Time
 	)
 	reason := cause.Error()
 	escalated := errors.Is(cause, core.ErrEscalated)
@@ -170,6 +171,9 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 		if retry {
 			next = core.TaskPending
 			followUp = core.EventTaskRetryScheduled
+			if delay := e.retry.Backoff(task.Attempt); delay > 0 {
+				notBefore = e.clock.Now().Add(delay)
+			}
 		}
 		if err := tx.TransitionTask(ctx, id, core.TaskRunning, next, core.TaskOutcome{Error: reason}); err != nil {
 			return err
@@ -187,9 +191,10 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 			return err
 		}
 		if err := core.Append(ctx, tx, task.RunID, followUp, task.StepID, core.TaskRetryScheduledData{
-			TaskID:  id,
-			Attempt: task.Attempt,
-			Reason:  reason,
+			TaskID:    id,
+			Attempt:   task.Attempt,
+			Reason:    reason,
+			NotBefore: notBefore,
 		}); err != nil {
 			return err
 		}
@@ -200,8 +205,10 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 		// intent exactly as its creation did. Republishing after the commit
 		// instead would put back the window this layer removed — and a task
 		// stranded on its second attempt is no more visible than one stranded
-		// on its first.
-		return tx.EnqueueDelivery(ctx, id)
+		// on its first. notBefore delays that dispatch when a backoff policy
+		// is configured; the zero value dispatches it immediately, as every
+		// retry did before backoff existed.
+		return tx.EnqueueDelivery(ctx, id, notBefore)
 	})
 	switch {
 	case errors.Is(err, core.ErrFenced):
@@ -216,8 +223,18 @@ func (e *Engine) FailTask(ctx context.Context, id core.TaskID, token core.Fencin
 	}
 
 	if retry {
-		e.log.Info("task failed, retrying", "task_id", id, "attempt", attempt, "error", reason)
-		e.wake()
+		if notBefore.IsZero() {
+			e.log.Info("task failed, retrying immediately",
+				"task_id", id, "attempt", attempt, "error", reason)
+			e.wake()
+		} else {
+			// A delayed retry has nothing for the relay to do yet; waking it
+			// now would only cost a sweep that finds nothing ready. The
+			// ordinary ticker, or whatever wakes the relay next, finds it once
+			// its backoff actually elapses.
+			e.log.Info("task failed, retrying after backoff",
+				"task_id", id, "attempt", attempt, "not_before", notBefore, "error", reason)
+		}
 		return nil
 	}
 

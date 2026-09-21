@@ -383,6 +383,7 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 	relay, err := outbox.New(outbox.Config{
 		Store:      store,
 		Dispatcher: dispatcher,
+		Clock:      clk,
 		Interval:   cfg.RelayInterval,
 		Logger:     log,
 	})

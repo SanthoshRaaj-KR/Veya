@@ -34,7 +34,7 @@ func TestEngineCommitsDeliveryWithTheTask(t *testing.T) {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
 	}
 
-	pending, err := h.store.PendingDeliveries(context.Background(), 10)
+	pending, err := h.store.PendingDeliveries(context.Background(), h.clock.Now(), 10)
 	if err != nil {
 		t.Fatalf("PendingDeliveries: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestReclaimedTaskIsAnnouncedInTheSameTransaction(t *testing.T) {
 		t.Fatalf("reaper reclaimed %d tasks, want 1", n)
 	}
 
-	pending, err := h.store.PendingDeliveries(context.Background(), 10)
+	pending, err := h.store.PendingDeliveries(context.Background(), h.clock.Now(), 10)
 	if err != nil {
 		t.Fatalf("PendingDeliveries: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestDeadLetteredTaskIsNotAnnounced(t *testing.T) {
 	if task.Status != core.TaskDeadLetter {
 		t.Fatalf("task status = %s, want DEAD_LETTER after exhausting attempts", task.Status)
 	}
-	pending, err := h.store.PendingDeliveries(context.Background(), 10)
+	pending, err := h.store.PendingDeliveries(context.Background(), h.clock.Now(), 10)
 	if err != nil {
 		t.Fatalf("PendingDeliveries: %v", err)
 	}
@@ -156,7 +156,7 @@ func (h *harness) drainDeliveries(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 
-	pending, err := h.store.PendingDeliveries(ctx, 100)
+	pending, err := h.store.PendingDeliveries(ctx, h.clock.Now(), 100)
 	if err != nil {
 		t.Fatalf("PendingDeliveries: %v", err)
 	}

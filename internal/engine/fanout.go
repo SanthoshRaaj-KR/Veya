@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
@@ -81,7 +82,7 @@ func (e *Engine) dispatchParallel(ctx context.Context, run core.Run, d core.Deci
 				Type:        call.TaskType,
 				Payload:     call.Payload,
 				Status:      core.TaskPending,
-				MaxAttempts: defaultMaxAttempts,
+				MaxAttempts: e.maxAttempts(),
 			}
 			if err := tx.CreateTask(ctx, task); err != nil {
 				return err
@@ -94,7 +95,7 @@ func (e *Engine) dispatchParallel(ctx context.Context, run core.Run, d core.Deci
 				}); err != nil {
 				return err
 			}
-			if err := tx.EnqueueDelivery(ctx, taskIDs[i]); err != nil {
+			if err := tx.EnqueueDelivery(ctx, taskIDs[i], time.Time{}); err != nil {
 				return err
 			}
 		}

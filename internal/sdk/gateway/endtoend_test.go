@@ -65,6 +65,7 @@ func newRemoteStack(t *testing.T) *remoteStack {
 	relay, err := outbox.New(outbox.Config{
 		Store:      store,
 		Dispatcher: dispatcher,
+		Clock:      clk,
 		Interval:   5 * time.Millisecond,
 		Logger:     quiet,
 	})

@@ -66,7 +66,7 @@ func TestARealTimerOnARealClock(t *testing.T) {
 	t.Cleanup(func() { _ = dispatcher.Close() })
 
 	relay, err := outbox.New(outbox.Config{
-		Store: store, Dispatcher: dispatcher,
+		Store: store, Dispatcher: dispatcher, Clock: sys,
 		Interval: 20 * time.Millisecond, Logger: quietLogger(),
 	})
 	if err != nil {

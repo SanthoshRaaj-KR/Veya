@@ -392,6 +392,7 @@ func newHarnessOn(t *testing.T, d core.Decider, disp core.Dispatcher,
 	relay, err := outbox.New(outbox.Config{
 		Store:      store,
 		Dispatcher: disp,
+		Clock:      clk,
 		Interval:   5 * time.Millisecond,
 		Logger:     quietLogger(),
 	})

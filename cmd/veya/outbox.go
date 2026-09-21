@@ -36,12 +36,13 @@ func cmdOutbox(args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	pending, err := store.PendingDeliveries(ctx, *limit)
+	now := time.Now()
+	pending, err := store.PendingDeliveries(ctx, now, *limit)
 	if err != nil {
 		return err
 	}
 	if len(pending) == 0 {
-		fmt.Println("no undelivered work")
+		fmt.Println("no undelivered work ready now")
 		return nil
 	}
 
@@ -57,9 +58,12 @@ func cmdOutbox(args []string) error {
 	}
 
 	// A few rows a second old is the relay working. The same rows a minute
-	// later, with attempts climbing, is the thing worth waking up for.
-	fmt.Fprintf(os.Stderr, "\n%d committed and not yet delivered. This list is normally "+
-		"empty; rows that persist mean no relay is running, or the broker is "+
+	// later, with attempts climbing, is the thing worth waking up for. A
+	// retry backing off on schedule is not here at all: PendingDeliveries
+	// only returns rows ready now, so this list stays a health check rather
+	// than something an operator has to filter for themselves.
+	fmt.Fprintf(os.Stderr, "\n%d committed, ready, and not yet delivered. This list is "+
+		"normally empty; rows that persist mean no relay is running, or the broker is "+
 		"refusing work.\n", len(pending))
 	return nil
 }

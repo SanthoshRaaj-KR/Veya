@@ -279,7 +279,11 @@ func (r *Reaper) reclaim(ctx context.Context, stale core.Lease, now time.Time) (
 		// runnable and announced at the same instant. A dead-lettered task gets
 		// none: nobody should be told to work on it.
 		if next == core.TaskPending {
-			if err := tx.EnqueueDelivery(ctx, task.ID); err != nil {
+			// Immediate, not backed off: the previous attempt did not fail,
+			// its owner went silent, and the fix is a live worker picking the
+			// task up as soon as possible, not a delay meant to be kind to a
+			// downstream service that was never the problem.
+			if err := tx.EnqueueDelivery(ctx, task.ID, time.Time{}); err != nil {
 				return err
 			}
 		}

@@ -37,6 +37,7 @@ import (
 type Relay struct {
 	store      core.Store
 	dispatcher core.Dispatcher
+	clock      core.Clock
 	interval   time.Duration
 	batch      int
 	log        *slog.Logger
@@ -45,10 +46,16 @@ type Relay struct {
 	wake chan struct{}
 }
 
-// Config wires a Relay. Store and Dispatcher are required.
+// Config wires a Relay. Store, Dispatcher and Clock are required.
 type Config struct {
 	Store      core.Store
 	Dispatcher core.Dispatcher
+
+	// Clock resolves which backed-off retries are ready. Required, like every
+	// other clock in this codebase: no code above the composition root calls
+	// time.Now, so a default here would be this package quietly becoming one
+	// more place time enters the runtime.
+	Clock core.Clock
 
 	// Interval is the longest a committed task waits to be published if nobody
 	// calls Wake. Defaults to 1s.
@@ -71,6 +78,8 @@ func New(cfg Config) (*Relay, error) {
 		return nil, errors.New("outbox: Store is required")
 	case cfg.Dispatcher == nil:
 		return nil, errors.New("outbox: Dispatcher is required")
+	case cfg.Clock == nil:
+		return nil, errors.New("outbox: Clock is required")
 	}
 
 	interval := cfg.Interval
@@ -89,6 +98,7 @@ func New(cfg Config) (*Relay, error) {
 	return &Relay{
 		store:      cfg.Store,
 		dispatcher: cfg.Dispatcher,
+		clock:      cfg.Clock,
 		interval:   interval,
 		batch:      batch,
 		log:        log,
@@ -166,7 +176,7 @@ func (r *Relay) sweep(ctx context.Context) {
 // When the two failure modes are "silently stuck" and "delivered twice", the
 // design always takes the second.
 func (r *Relay) RelayOnce(ctx context.Context) (int, error) {
-	pending, err := r.store.PendingDeliveries(ctx, r.batch)
+	pending, err := r.store.PendingDeliveries(ctx, r.clock.Now(), r.batch)
 	if err != nil {
 		return 0, fmt.Errorf("list pending deliveries: %w", err)
 	}

@@ -57,6 +57,7 @@ func TestRelayRecoversWorkCommittedByADeadProcess(t *testing.T) {
 	relay, err := outbox.New(outbox.Config{
 		Store:      f.store,
 		Dispatcher: successor,
+		Clock:      f.clock,
 		Logger:     quiet(),
 	})
 	if err != nil {
@@ -171,6 +172,7 @@ type fixture struct {
 	store      core.Store
 	dispatcher *fakeDispatcher
 	relay      *outbox.Relay
+	clock      core.Clock
 	seq        int
 }
 
@@ -184,6 +186,7 @@ func newFixture(t *testing.T) *fixture {
 	relay, err := outbox.New(outbox.Config{
 		Store:      store,
 		Dispatcher: disp,
+		Clock:      clk,
 		Logger:     quiet(),
 	})
 	if err != nil {
@@ -191,7 +194,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	t.Cleanup(func() { _ = store.Close() })
-	return &fixture{store: store, dispatcher: disp, relay: relay}
+	return &fixture{store: store, dispatcher: disp, relay: relay, clock: clk}
 }
 
 // commitTask writes a task and its delivery intent in one transaction, which
@@ -213,7 +216,7 @@ func (f *fixture) commitTask(t *testing.T, id core.TaskID) {
 		}); err != nil {
 			return err
 		}
-		return tx.EnqueueDelivery(ctx, id)
+		return tx.EnqueueDelivery(ctx, id, time.Time{})
 	})
 	if err != nil {
 		t.Fatalf("commit task %s: %v", id, err)
@@ -231,7 +234,7 @@ func (f *fixture) relayOnce(t *testing.T) int {
 
 func (f *fixture) pending(t *testing.T) []core.Delivery {
 	t.Helper()
-	out, err := f.store.PendingDeliveries(context.Background(), 100)
+	out, err := f.store.PendingDeliveries(context.Background(), f.clock.Now(), 100)
 	if err != nil {
 		t.Fatalf("PendingDeliveries: %v", err)
 	}
