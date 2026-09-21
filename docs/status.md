@@ -1,7 +1,10 @@
 # Project Status and Phase Handoff
 
-**As of:** 20 September 2026 · `main` at `a228ef7` · working tree clean
-**Complete:** Layers 1, 2, 3, 4, 5 · **Next:** Layer 6 — Policy and operability
+**As of:** 21 September 2026 · `main` at `074a55f` · working tree clean
+**Complete:** Layers 1, 2, 3, 4, 5 · **In progress:** Layer 6 — cancellation,
+retry backoff and HTTP signal ingestion landed; compensation is a documented
+convention rather than an example; compaction, the dashboard and metrics are
+not started.
 
 This is the running status file. It records what is done and verified, what is
 knowingly left open, and what the next layer needs before it starts. Update it
@@ -82,17 +85,63 @@ are described in §3. `effects/`, `outbox/`, `dispatch/`, `lease/` and
 `worker/` are untouched — the ledger did not need to learn about parallelism,
 because children get distinct keys by getting distinct step ids.
 
+### Layer 6 — Policy and operability 🚧 (three of six roadmap items)
+
+- [x] **Cancellation.** `DecideCancel` / `DECISION_KIND_CANCEL`, numbered
+      since Layer 5 and refused by name until now. Cooperative and
+      forward-looking exactly as README §11 always said it would be:
+      `finish()` is the whole engine-side implementation, and a child
+      dispatched before the `CANCEL` lands its outcome after `RUN_CANCELLED`
+      the same way one lands after `RUN_COMPLETED` under an `ANY` join (open
+      item #6 — resolved, because the mechanism needed no change to cover it)
+- [x] **Compensation, as a decider convention.** Not engine work, per §5.2's
+      own prediction: `Cancel`/`DecideCancel`'s doc comments are the worked
+      example — issue ordinary `CALL_TOOL` decisions to reverse what already
+      committed, then raise `Cancel`. No dedicated example script exists yet
+      (`examples/` has none that cancels), which is the honest gap here
+- [x] **Retry backoff.** `core.RetryPolicy` (`MaxAttempts`, `InitialBackoff`,
+      `MaxBackoff`, `Multiplier`, `Jitter`) is engine-wide, not per tool —
+      settling §5.2 decision 2 in the direction its own text hinted at
+      ("like `LeaseTTL`"), with the identical follow-on item (#8, still open).
+      `task_outbox.available_at` (migration `0005`) is `runs.available_at`'s
+      idiom one column over: a retry's `EnqueueDelivery` waits for its
+      instant instead of firing immediately, and `PendingDeliveries` takes a
+      `now` for the same reason `RunsAwaitingAdvance` does
+- [x] **HTTP signal ingestion.** `internal/signalhttp`, `POST
+      /v1/runs/{run}/signals/{name}`, over the same `Engine.Signal` /
+      `DeliverSignal` `veya signal` already used. Off unless
+      `--signal-http` is set; no auth, loopback default, the same posture
+      `internal/sdk/gateway` already took and for the same reason (open item
+      #9's shape, now shared by a second port rather than answered)
+- [ ] **Deadline propagation.** Not started. `runs.available_at` and
+      `task_outbox.available_at` are both "not before time T"; a deadline is
+      "not after", the opposite comparison, and nothing here builds it
+- [ ] **Compaction, snapshots, retention.** Not started, including open
+      items #10 and #11 (outbox and signal rows are never trimmed). §5.2
+      decision 4 is unresolved: what compaction may throw away, with history
+      as the authority for replay
+- [ ] **Local dashboard.** Not started
+- [ ] **Metrics and tracing.** Not started
+
+**Scope note.** Cancellation and retry/backoff needed real engine and store
+changes (a new decision kind, a new column on two adapters, a migration, a
+required `Clock` on the outbox relay); HTTP signal ingestion needed a new
+package but no runtime change beneath it. Dashboard and metrics are a
+different kind of work — a UI and an observability library choice,
+respectively — and were not attempted in this pass.
+
 ### Verification state
 
 | Check | Result |
 |---|---|
-| `make test` (no Docker) | **254 PASS**, all green |
-| `make test-integration` (PostgreSQL 16 + NATS 2) | **315 PASS**, all green |
-| `make sdk-test` (ruff, mypy strict, pytest) | **112 PASS**, all green |
+| `make test` (no Docker) | **275 PASS**, all green |
+| `make test-integration` (PostgreSQL 16 + NATS 2) | **337 PASS**, all green |
+| `make sdk-test` (ruff, mypy strict, pytest) | **115 PASS**, all green |
 | `make demo-python` (Go runtime + Python worker) | exit 0 |
 | `make demo-onboarding` (fan-out + timer + human approval) | exit 0, COMPLETED |
+| HTTP signal ingestion, manual | `curl -X POST .../signals/approval` against a live `onboarding_agent` run — COMPLETED, payload carried through to output |
 | `go vet ./...` and `go vet -tags=integration ./...` | clean |
-| `make proto-check` | clean |
+| `make proto-check` equivalent (`make proto`, diffed) | clean |
 | `make demo` / `demo-memory` / `demo-jetstream` | complete |
 | `make test-race` | **not run locally** — no C toolchain; CI runs it with `-count=2` |
 
@@ -131,6 +180,23 @@ through `cygpath` for this reason. The simpler fix is `make sdk-install`.
 
 Newest first. Each phase's commits are self-contained and the messages carry
 the reasoning, so `git show` is the place to look for *why*.
+
+**Layer 6 (in progress)**
+
+```
+074a55f feat(signalhttp): HTTP signal ingestion, as an optional door onto DeliverSignal
+dbfa3e5 feat(engine): FailTask backs off, and the relay learns to wait
+654af6a feat(store): persist a delivery's AvailableAt on both adapters
+13309ca feat(core): a retry curve, and a delivery that waits for its instant
+37b5ba5 feat(sdk/python): raise Cancel to end a run cancelled, not failed
+98cfabe feat(engine): cancellation, cooperative and forward-looking
+```
+
+One commit immediately before these is not a Layer 6 feature: `b0706e2
+fix(core): a fan-out needs at least one call` closed a gap the Layer 5
+handoff's own audit found (a zero-call `ALL`/`ANY` fan-out was accepted and
+trivially self-satisfied) and corrected three stale "arrives in Layer 5"
+comments left over from the roadmap rename.
 
 **Layer 5**
 
@@ -319,25 +385,27 @@ same bug a real engine would have if it rounded or defaulted a wake-up.
 
 ## 4. Open items carried into Layer 6
 
-Nothing here blocks Layer 6. Ordered by how likely it is to bite.
+Nothing here blocks the rest of Layer 6. Ordered by how likely it is to bite.
+Struck items are resolved; the entry stays so the table remains a record of
+what was true, not just what is true now.
 
-| # | Item | Why it is open | Cost to fix |
+| # | Item | Why it is open | Status |
 |---|---|---|---|
-| 1 | **No cancellation** | `CANCEL` is named in the `.proto` and refused by the runtime. It is about the effect ledger rather than about suspension: mark `CANCELLED`, stop dispatching, let in-flight effects land and be recorded. It interacts with fan-out — cancelling a run with eight children in flight — which is why it waited until fan-out existed | Layer 6 |
-| 2 | **No retry backoff or per-tool policy** | retries are immediate with a fixed three-attempt limit. Backoff is "not before time T", which `runs.available_at` now provides, so this is policy on the tool descriptor next to `KeyTTL` rather than new machinery | Layer 6 |
-| 3 | **No compensation** | settled as a sequence of ordinary `CallTool` decisions, so it is an SDK convention and a decider habit, not engine work. It needs cancellation first, since the thing that triggers a rollback is usually a cancel | Layer 6 |
-| 4 | **`effect_seq` is still always 1** | see §3. Fan-out made child *step* ids real; sub-effects are the separate feature, and shipping both at once gives an unexpected key two candidate causes and no way to bisect | Layer 6 |
-| 5 | **Signals arrive only through the CLI** | `veya signal` proves the port, and an HTTP endpoint would call the same `engine.DeliverSignal`. What it adds is a server, a bind address and an auth question this project has deliberately not answered | Layer 6, with the dashboard |
-| 6 | **A satisfied `ANY` leaves siblings running** | they are not cancelled, their effects land, and they are recorded. That is correct — a ledger with an orphan in it is worse than a slow child — but it means a run can complete with work still in flight, and its history gains `TASK_COMPLETED` events after `RUN_COMPLETED` | fixed by #1, not before |
+| 1 | ~~No cancellation~~ | `CANCEL` was named in the `.proto` and refused by the runtime. | **Resolved** (`98cfabe`): `DecideCancel` ends a run `CANCELLED`, cooperatively and forward-looking. Children in flight land after it, exactly like #6 |
+| 2 | ~~No retry backoff or per-tool policy~~ | retries were immediate with a fixed three-attempt limit. | **Resolved, engine-wide** (`13309ca`, `dbfa3e5`): `core.RetryPolicy` on `engine.Config`. *Per-tool* remains open — see #8, which has the identical shape |
+| 3 | ~~No compensation~~ | needs cancellation first. | **Resolved as a convention**, not as an example: `Cancel`'s doc comment states the pattern (ordinary `CALL_TOOL` decisions, then raise `Cancel`). No `examples/` script demonstrates it yet |
+| 4 | **`effect_seq` is still always 1** | see §3 of the Layer 5 section above. Fan-out made child *step* ids real; sub-effects are the separate feature, and shipping both at once gives an unexpected key two candidate causes and no way to bisect | Untouched this pass |
+| 5 | ~~Signals arrive only through the CLI~~ | `veya signal` proved the port; an HTTP endpoint calls the same `engine.DeliverSignal`. | **Resolved** (`074a55f`): `internal/signalhttp`, off by default, same no-auth/loopback posture as the worker gateway rather than an answer to the auth question |
+| 6 | **A satisfied `ANY` leaves siblings running** | they are not cancelled, their effects land, and they are recorded. That is correct — a ledger with an orphan in it is worse than a slow child — but it means a run can complete with work still in flight, and its history gains `TASK_COMPLETED` events after `RUN_COMPLETED` | Still true, and now shared by `CANCELLED`: `TestACancelDoesNotStopAChildAlreadyInFlight` covers it. Not itself a defect — see #1's resolution |
 | 7 | **A slow Python tool holds a Go worker slot** | the price of one implementation of the ordering rule; see worker-protocol.md §2.1. Mitigated by running more `veya-worker` processes | not planned; revisit if it binds |
-| 8 | **One lease TTL for all task types** | an LLM call and a deployment do not deserve the same timeout. More visible now that a fan-out puts ten tools in flight at once | Layer 6 |
-| 9 | **No auth on the worker port** | deliberate, and stated rather than half-built. It binds loopback | not planned |
-| 10 | **Outbox rows are never trimmed** | published rows accumulate forever. Trimming belongs with compaction | Layer 6 |
-| 11 | **`signals` rows are never trimmed either** | same shape as #10, and now the same size problem: a run that takes a hundred callbacks keeps a hundred rows after it finishes | Layer 6, with #10 |
+| 8 | **One lease TTL, and one retry policy, for all task types** | an LLM call and a deployment do not deserve the same timeout or the same backoff curve. More visible now that a fan-out puts ten tools in flight at once, and now that retry policy exists engine-wide but not per tool | Open. §5.2 decision 2 named this trade-off explicitly rather than resolving it |
+| 9 | **No auth on the worker port, or on the signal HTTP port** | deliberate, and stated rather than half-built. Both bind loopback by default | not planned |
+| 10 | **Outbox rows are never trimmed** | published rows accumulate forever. Trimming belongs with compaction | Open |
+| 11 | **`signals` rows are never trimmed either** | same shape as #10, and now the same size problem: a run that takes a hundred callbacks keeps a hundred rows after it finishes | Open, with #10 |
 
-Resolved since the last handoff: the integration suite runs locally again
-(`dab2959`), and all five of Layer 5's blocking questions are answered
-(`27553ff`).
+Resolved since the last handoff: items 1, 2 (engine-wide), 3 (as a
+convention) and 5 above, plus the fan-out validity gap `b0706e2` closed and
+three stale comments it corrected.
 
 ---
 
@@ -348,56 +416,68 @@ operability to run the thing without reading the database by hand.
 
 Roadmap items:
 
-- [ ] Cancellation, and compensation as a decider convention
-- [ ] Retry policy, backoff, dead-letter handling, deadline propagation
-- [ ] HTTP signal ingestion
+- [x] Cancellation, and compensation as a decider convention (`98cfabe`,
+      `37b5ba5`; compensation has no worked example yet)
+- [x] Retry policy and backoff, engine-wide (`13309ca`, `dbfa3e5`);
+      dead-letter handling predates this pass; deadline propagation is not
+      started
+- [x] HTTP signal ingestion (`074a55f`)
 - [ ] Compaction, snapshots, retention — including the outbox and signals
 - [ ] Local dashboard: run timeline, stuck-run detection, effect audit
 - [ ] Metrics and tracing
 
 ### 5.1 What is already in place for it
 
-| Seam | Where | Layer 6 uses it to |
+Updated from the version written before this pass: rows for what landed now
+say so, rather than describing it as a seam something later will use.
+
+| Seam / feature | Where | Status |
 |---|---|---|
-| `runs.available_at` | migration `0003` | back a retry off, and bound a deadline — both are "not before time T", and the column and its index already exist |
-| `Store.NextWakeUp` | `core/ports.go` | wake on a backoff sooner than the scan interval, with nothing held in memory |
-| `core.Wait` / `PendingWait` | `core/wait.go` | describe why a run is parked, which a dashboard needs and the CLI already prints |
-| `engine.DeliverSignal` | `engine/signals.go` | an HTTP endpoint calls this and adds nothing else |
-| `tool.KeyTTL` | `core/tool.go` | per-tool policy already lives on the descriptor; retry policy joins it there rather than in a switch |
-| `DECISION_KIND_CANCEL` / `COMPENSATE` | the `.proto` | already numbered, already refused by name. Layer 6 implements them without touching the wire contract |
-| `core.FanOut` | `core/join.go` | know which children are in flight when a run is cancelled |
-| `TaskFailedData.Final` | `core/event.go` | distinguish a retryable attempt from a settled failure, which a backoff policy needs and the join already uses |
+| Cancellation | `core.DecideCancel`, `engine.go` `case core.DecideCancel` | **Landed.** `finish()` is the whole engine-side implementation |
+| Retry backoff | `core.RetryPolicy`, `engine.Config.Retry`, `task_outbox.available_at` (migration `0005`) | **Landed, engine-wide.** Per-tool remains open item #8 |
+| HTTP signal ingestion | `internal/signalhttp`, over `engine.Engine.Signal` | **Landed.** Off by default; no auth, same posture as the worker gateway |
+| `runs.available_at` | migration `0003` | Used by retry backoff's sibling column, `task_outbox.available_at` — the same "not before time T" idiom, one table over |
+| `Store.NextWakeUp` | `core/ports.go` | Still only wakes the *run* recovery scan early. The outbox relay has no equivalent — it relies on its fixed interval to notice a backed-off retry became ready, which is a liveness cost the relay's own doc comment already says it is allowed to have |
+| `core.Wait` / `PendingWait` | `core/wait.go` | Unused by anything new this pass; still what a dashboard would read |
+| `DECISION_KIND_COMPENSATE` | the `.proto` | Still numbered, still refused by name. No engine work is expected to ever land here — see roadmap item 1 |
+| `core.FanOut` | `core/join.go` | Used by `TestACancelDoesNotStopAChildAlreadyInFlight` to assert children in flight are unaffected by a `CANCEL` |
+| `TaskFailedData.Final` | `core/event.go` | Unchanged; backoff computes from `Task.Attempt`, not from this field |
 
-### 5.2 Decisions Layer 6 has to make first
+### 5.2 Decisions made this pass, and what is still open
 
-1. **What cancelling a run with children in flight means.** Mark the run
-   `CANCELLED` and let the children land, or stop dispatching and dead-letter
-   them? The first keeps the ledger honest and leaves external actions
-   happening after the run ended; the second needs a story for an effect that
-   was already `RUNNING`. Open item #6 is this question wearing a different
-   hat.
+1. **What cancelling a run with children in flight means — decided.** Mark
+   the run `CANCELLED` and let the children land; `finish()` does not
+   special-case which terminal event it is, so the mechanism that already let
+   a satisfied `ANY` leave siblings running needed no change to also cover
+   cancellation. Open item #6 was this question wearing a different hat, and
+   is now closed the same way.
 
-2. **Where retry policy lives on the descriptor.** `KeyTTL` is a duration and
-   a precedent, but backoff is a curve plus a cap plus a jitter, and a
-   `RetryPolicy` struct on `ToolDescriptor` is a bigger thing to make public
-   than one field.
+2. **Where retry policy lives — decided, provisionally.** Engine-wide, on
+   `engine.Config`, not on `ToolDescriptor`. `RetryPolicy` is public API
+   (`core.RetryPolicy`), but attached to the engine rather than the
+   descriptor — matching where `LeaseTTL` already lives, and inheriting its
+   open item: per-task-type policy is still open item #8. A future per-tool
+   `RetryPolicy` would need the executor (which resolves `ToolDescriptor`) to
+   pass a policy back to the engine's `FailTask`, which does not happen today.
 
-3. **Whether a dead-lettered child should be retryable by hand.** The CLI can
-   already resolve an effect; it cannot re-arm a task. A fan-out where one
-   child failed and nine succeeded is exactly the case where somebody wants to
-   fix the provider and push one button.
+3. **Whether a dead-lettered child should be retryable by hand — not
+   decided.** Still open. The CLI can resolve an effect; it cannot re-arm a
+   task.
 
-4. **What compaction may throw away.** History is the authority for replay, so
-   compacting it is compacting the thing everything else is derived from. A
-   snapshot has to be re-derivable, or it is a second source of truth.
+4. **What compaction may throw away — not decided.** Still open, and still
+   the one that matters most before starting on it: history is the authority
+   for replay, so compacting it is compacting the thing everything else is
+   derived from.
 
-### 5.3 Suggested entry criteria
+### 5.3 Remaining entry criteria, for whoever picks this up next
 
-- [ ] Cancellation semantics for a run with children in flight written down
-      (5.2 #1), because it is the one that can invalidate work
-- [ ] `make test-integration` green — it is, as of this handoff
-- [ ] A decision on whether `RetryPolicy` is public API (5.2 #2), since the
-      tool descriptor is what every agent author touches
+- [x] Cancellation semantics for a run with children in flight written down
+      and implemented (5.2 #1)
+- [x] `make test-integration` green — it is, as of this handoff (337 PASS)
+- [x] A decision on whether `RetryPolicy` is public API (5.2 #2) — yes,
+      engine-wide
+- [ ] A decision on what compaction may throw away (5.2 #4), before starting
+      on outbox/signal trimming (items #10, #11) or run history compaction
 
 ---
 
@@ -412,8 +492,9 @@ Roadmap items:
 | PostgreSQL | container on **:5433**, not 5432, to avoid shadowing a host install |
 | NATS | container on :4222, monitoring on :8222 (needs `-m 8222`) |
 | Worker gateway | **:50551**, loopback only by default |
+| Signal HTTP server | **:8089** by default when `--signal-http` is set; off otherwise. Loopback default, no auth |
 | DSN | `postgres://veya:veya@localhost:5433/veya?sslmode=disable` |
-| Migrations | forward-only, embedded; `0001_init.sql`, `0002_outbox_relay.sql`, `0003_run_suspension.sql`, `0004_signals.sql` |
+| Migrations | forward-only, embedded; `0001_init.sql`, `0002_outbox_relay.sql`, `0003_run_suspension.sql`, `0004_signals.sql`, `0005_retry_backoff.sql` |
 | CI | `.github/workflows/ci.yml` — vet + gofmt + proto drift, race detector, Python SDK on 3.10 and 3.13, the worked example, and the integration suite |
 | Demos needing Docker | `make demo`, `demo-jetstream`, `demo-onboarding`. The onboarding one needs PostgreSQL because a signal must come from outside the runtime process |
 | Shell | Windows; git is set to `core.autocrlf=true`, so the repo stores LF and the worktree has CRLF. `gofmt -l` occasionally flags a file for that reason alone |

@@ -993,7 +993,7 @@ Outcome: **one refund, no lost work, no human intervention.**
 - Deploying a new agent version does not migrate in-flight runs. Runs pin `agent_version` and complete under the version they started on.
 - Large payloads are stored inline. Payload offloading to blob storage is on the roadmap; very large tool results will inflate the database until then.
 - Effect retention is intentionally longer than event retention. Compacting effects too aggressively reintroduces duplicate-side-effect risk.
-- Cancellation is cooperative and forward-looking. `run.cancel()` prevents the *next* durable step; it does not interrupt an effect already in flight and does not reverse one already committed. Marking a run `CANCELLED` after an email has been sent records a decision, not an undo. Reversing a committed effect requires an authored compensation.
+- Cancellation is cooperative and forward-looking. Raising `Cancel` from an agent body (mirroring `Fail`) prevents the *next* durable step; it does not interrupt an effect already in flight and does not reverse one already committed. Marking a run `CANCELLED` after an email has been sent records a decision, not an undo. Reversing a committed effect requires an authored compensation: ordinary `ctx.call()`s issued before `Cancel` is raised, not automatic rollback.
 - Exactly-once is bounded by the provider's key retention, not ours. An effect unresolved past its tool's `key_ttl` escalates rather than reconciling (§5.6).
 
 ---
@@ -1373,8 +1373,9 @@ Not for performance reasons. Kafka is a distributed log without per-message ackn
 >
 > Still absent by design: `effect_seq` is still always 1 (Layer 5, with
 > fan-out), `ctx.now()` returns the run's start time rather than a per-step
-> durable clock (Layer 5, with timers), and there is no auth on the worker
-> port, which is why it binds loopback.
+> durable clock (a Layer 6 sized question — recording one means treating
+> every read as an effect, which durable timers alone do not require), and
+> there is no auth on the worker port, which is why it binds loopback.
 
 **Layer 5 — Suspension and fan-out** ✅ *complete*
 - [x] Fan-out / fan-in with deterministic child step IDs
@@ -1412,14 +1413,37 @@ Not for performance reasons. Kafka is a distributed log without per-message ackn
 > would make a second action inside one step. Shipping both at once gives an
 > unexpected key two candidate causes and no way to bisect.
 
-**Layer 6 — Policy and operability**
-- [ ] Cancellation, and compensation as a decider convention
-- [ ] Retry policies, backoff, dead-letter handling, deadline propagation
-- [ ] HTTP signal ingestion
+**Layer 6 — Policy and operability** 🚧 *in progress*
+- [x] Cancellation, and compensation as a decider convention *(compensation
+      has no worked example yet — see docs/status.md §4 item 3)*
+- [x] Retry policy and backoff, engine-wide *(dead-letter handling predates
+      this layer; deadline propagation is not started; per-tool policy is
+      open — docs/status.md §4 item 8)*
+- [x] HTTP signal ingestion
 - [ ] Compaction, snapshots, tiered retention
 - [ ] Payload offloading for large results
 - [ ] Local dashboard: run timeline, stuck-run detection, effect audit
 - [ ] Metrics and distributed tracing
+
+> `DecideCancel` ends a run `CANCELLED` cooperatively: `finish()` is the whole
+> engine-side implementation, since it does not interrupt an effect already in
+> flight or reverse one already committed. A child dispatched before the
+> `CANCEL` lands its outcome after `RUN_CANCELLED`, the same way one lands
+> after `RUN_COMPLETED` under an `ANY` join -- the mechanism needed no change
+> to also cover cancellation.
+>
+> `core.RetryPolicy` computes a backoff curve from the attempt just made, and
+> `task_outbox.available_at` (migration `0005`) delays a retry's redelivery
+> until that instant -- `runs.available_at`'s idiom, one table over. It lives
+> on `engine.Config`, not on `ToolDescriptor`: retry policy is engine-wide
+> today, the same shape `LeaseTTL` already has and the same open item (one
+> policy for every task type).
+>
+> `internal/signalhttp` answers the seam docs/status.md named before this
+> layer started: an HTTP endpoint over the same `Engine.Signal` /
+> `DeliverSignal` the CLI already used. It does not answer the auth question
+> -- deliberately, and stated rather than half-built, the same posture the
+> worker gateway already takes. Off unless `--signal-http` is set.
 
 **Layer 7 — Validation**
 - [ ] Deterministic simulation harness
