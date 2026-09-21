@@ -193,6 +193,11 @@ type (
 		TaskID  TaskID `json:"task_id"`
 		Attempt int    `json:"attempt"`
 		Reason  string `json:"reason"`
+
+		// NotBefore is when the retry becomes eligible for delivery. The zero
+		// value means immediately, which is every retry scheduled before
+		// backoff existed and every one with no policy configured since.
+		NotBefore time.Time `json:"not_before,omitempty"`
 	}
 
 	TimerSetData struct {

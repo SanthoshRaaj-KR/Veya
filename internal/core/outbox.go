@@ -54,6 +54,12 @@ type Delivery struct {
 	Attempts  int
 	LastError string
 	CreatedAt time.Time
+
+	// AvailableAt is when this row is next eligible for delivery. The zero
+	// time means it always has been — every row from before backoff existed,
+	// and every immediate dispatch since. A row with this in the future is a
+	// retry backing off on schedule, not a stuck delivery.
+	AvailableAt time.Time
 }
 
 // DeliverySubject is where task deliveries are published.

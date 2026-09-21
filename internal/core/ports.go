@@ -78,13 +78,22 @@ type Store interface {
 	// both wasteful and misleading.
 	UnresolvedEffects(ctx context.Context, before time.Time, limit int) ([]Effect, error)
 
-	// PendingDeliveries returns unpublished outbox rows, oldest first. The
-	// relay's input.
+	// PendingDeliveries returns unpublished outbox rows that are ready now —
+	// AvailableAt at or before now — oldest first. The relay's input.
 	//
 	// A row here is a task that has been committed and not yet handed to the
 	// dispatcher. The list is normally empty; a row that persists across sweeps
-	// means the broker is refusing work.
-	PendingDeliveries(ctx context.Context, limit int) ([]Delivery, error)
+	// past its AvailableAt means the broker is refusing work. A row not yet at
+	// its AvailableAt is a retry backing off on schedule, not a stuck one, and
+	// is deliberately excluded rather than returned for the relay to skip: the
+	// relay has nothing to do with a row it cannot publish yet, and a query
+	// that already excludes it is one fewer thing every caller has to filter
+	// for itself.
+	//
+	// It takes now for the same reason RunsAwaitingAdvance does: a query that
+	// read the database's clock would be the one place the virtual clock
+	// cannot reach.
+	PendingDeliveries(ctx context.Context, now time.Time, limit int) ([]Delivery, error)
 
 	// ExpiredLeases returns leases whose owner has gone silent, on tasks that
 	// are still supposed to be worked on, oldest expiry first. The reaper's
@@ -131,7 +140,10 @@ type Tx interface {
 	// taken.
 	AppendEvent(ctx context.Context, e Event) error
 
-	// EnqueueDelivery records the intent to hand a task to a worker.
+	// EnqueueDelivery records the intent to hand a task to a worker, not
+	// before availableAt. The zero time means now — ready immediately, which
+	// is what task creation, a reclaim, and an immediate retry all want, and
+	// what every row written before this parameter existed already was.
 	//
 	// It belongs in the same transaction as whatever made the task
 	// dispatchable — its creation, a retry, a reclaim — because that is the
@@ -139,7 +151,7 @@ type Tx interface {
 	// closes; see outbox.go.
 	//
 	// Returns ErrNotFound if the task does not exist.
-	EnqueueDelivery(ctx context.Context, taskID TaskID) error
+	EnqueueDelivery(ctx context.Context, taskID TaskID, availableAt time.Time) error
 
 	// MarkDelivered records that deliveries reached the dispatcher.
 	//

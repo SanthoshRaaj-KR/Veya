@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"math/rand"
 	"time"
 )
 
@@ -81,6 +82,92 @@ func (d ToolDescriptor) KeyExpired(e Effect, now time.Time) bool {
 		return false
 	}
 	return now.Sub(e.CreatedAt) > d.KeyTTL
+}
+
+// RetryPolicy is how many times a failed task is retried, and how long it
+// waits between attempts.
+//
+// Engine-wide today, not per tool. KeyTTL sits on ToolDescriptor because a
+// provider's key retention is a fact about that provider; a retry curve is
+// not obviously the same kind of fact, and a struct is a bigger thing to make
+// public on the descriptor than one duration was — see
+// docs/execution-model.md section 8 and status.md section 5.2. One lease TTL
+// for every task type has the identical shape and the identical open item.
+//
+// The zero value is today's behaviour exactly: MaxAttempts of zero is read as
+// 3 by the caller, and a zero Backoff at every attempt means immediate
+// retry, unchanged from before this type existed.
+type RetryPolicy struct {
+	// MaxAttempts is how many tries a task gets before it is dead-lettered.
+	// Zero means the caller's default (3).
+	MaxAttempts int
+
+	// InitialBackoff is the delay before the second attempt. Zero means no
+	// delay — retries stay immediate, which is what an unset policy must do,
+	// since that is the only value every run committed before this existed
+	// can be read as having chosen.
+	InitialBackoff time.Duration
+
+	// MaxBackoff caps the curve. Zero means uncapped, which only matters once
+	// Multiplier makes the curve grow at all.
+	MaxBackoff time.Duration
+
+	// Multiplier grows the delay each attempt. Zero or less than 1 is read as
+	// 1: a policy that set a backoff but forgot to make it grow gets a fixed
+	// delay, not a curve that never advances and not one that errors.
+	Multiplier float64
+
+	// Jitter is the fraction of the computed delay to randomize away, in
+	// [0,1]. A fleet of tasks that all failed together and all retry on the
+	// same fixed curve hits the provider at the same instant every time;
+	// jitter is what keeps a thundering herd from reconstituting itself on
+	// every attempt. Values outside [0,1] are clamped.
+	Jitter float64
+}
+
+// Backoff returns how long to wait before retrying, given which attempt just
+// failed (1 for the first failure, matching Task.Attempt).
+//
+// Not required to be replay-deterministic: the decider never sees this value
+// or the instant it produces, only that a retry happened, so jitter drawn
+// from the package-level random source is honest rather than a determinism
+// risk — unlike ctx.random() in the SDK, which a replayed agent body does
+// see.
+func (p RetryPolicy) Backoff(attempt int) time.Duration {
+	if p.InitialBackoff <= 0 || attempt < 1 {
+		return 0
+	}
+	mult := p.Multiplier
+	if mult < 1 {
+		mult = 1
+	}
+
+	delay := float64(p.InitialBackoff)
+	// attempt-1 doublings: attempt 1 gets InitialBackoff itself.
+	for i := 1; i < attempt; i++ {
+		delay *= mult
+		if p.MaxBackoff > 0 && delay >= float64(p.MaxBackoff) {
+			delay = float64(p.MaxBackoff)
+			break
+		}
+	}
+	if p.MaxBackoff > 0 && delay > float64(p.MaxBackoff) {
+		delay = float64(p.MaxBackoff)
+	}
+
+	jitter := p.Jitter
+	switch {
+	case jitter <= 0:
+		return time.Duration(delay)
+	case jitter > 1:
+		jitter = 1
+	}
+	// Randomize away up to `jitter` of the delay, keeping the rest as a floor
+	// — a fully-jittered retry that lands at 0 is indistinguishable from no
+	// backoff at all, which defeats the point of having asked for one.
+	floor := delay * (1 - jitter)
+	spread := delay * jitter
+	return time.Duration(floor + rand.Float64()*spread)
 }
 
 // ToolRegistry resolves a task type to its descriptor.
