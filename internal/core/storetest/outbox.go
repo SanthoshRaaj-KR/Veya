@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
@@ -23,6 +24,7 @@ func outboxContracts() []contract {
 		{"FailedDeliveryStaysPendingAndCounts", testFailDelivery},
 		{"PendingDeliveriesAreOldestFirst", testDeliveryOrder},
 		{"DeliveryRequiresARealTask", testDeliveryNeedsTask},
+		{"ADelayedDeliveryIsNotPendingUntilItsInstant", testDelayedDelivery},
 	}
 }
 
@@ -35,7 +37,7 @@ func testDeliveryPending(t *testing.T, s core.Store) {
 		if err := tx.CreateTask(ctx, task); err != nil {
 			return err
 		}
-		return tx.EnqueueDelivery(ctx, task.ID)
+		return tx.EnqueueDelivery(ctx, task.ID, time.Time{})
 	})
 
 	pending := mustPending(t, s, 10)
@@ -72,7 +74,7 @@ func testDeliveryAtomicWithTask(t *testing.T, s core.Store) {
 		if err := tx.CreateTask(ctx, task); err != nil {
 			return err
 		}
-		if err := tx.EnqueueDelivery(ctx, task.ID); err != nil {
+		if err := tx.EnqueueDelivery(ctx, task.ID, time.Time{}); err != nil {
 			return err
 		}
 		return boom
@@ -104,7 +106,7 @@ func testMarkDelivered(t *testing.T, s core.Store) {
 			if err := tx.CreateTask(ctx, task); err != nil {
 				return err
 			}
-			if err := tx.EnqueueDelivery(ctx, task.ID); err != nil {
+			if err := tx.EnqueueDelivery(ctx, task.ID, time.Time{}); err != nil {
 				return err
 			}
 		}
@@ -152,7 +154,7 @@ func testFailDelivery(t *testing.T, s core.Store) {
 		if err := tx.CreateTask(ctx, task); err != nil {
 			return err
 		}
-		return tx.EnqueueDelivery(ctx, task.ID)
+		return tx.EnqueueDelivery(ctx, task.ID, time.Time{})
 	})
 
 	id := mustPending(t, s, 10)[0].ID
@@ -193,7 +195,7 @@ func testDeliveryOrder(t *testing.T, s core.Store) {
 			if err := tx.CreateTask(ctx, task); err != nil {
 				return err
 			}
-			return tx.EnqueueDelivery(ctx, task.ID)
+			return tx.EnqueueDelivery(ctx, task.ID, time.Time{})
 		})
 	}
 
@@ -210,16 +212,59 @@ func testDeliveryOrder(t *testing.T, s core.Store) {
 
 func testDeliveryNeedsTask(t *testing.T, s core.Store) {
 	err := s.RunInTx(context.Background(), func(ctx context.Context, tx core.Tx) error {
-		return tx.EnqueueDelivery(ctx, "task-that-does-not-exist")
+		return tx.EnqueueDelivery(ctx, "task-that-does-not-exist", time.Time{})
 	})
 	if !errors.Is(err, core.ErrNotFound) {
 		t.Fatalf("EnqueueDelivery for an absent task = %v, want ErrNotFound", err)
 	}
 }
 
+// testDelayedDelivery is the reason AvailableAt exists. A retry backing off
+// is not published early just because the relay happened to sweep before its
+// instant, and it is published once that instant is reached -- the same "not
+// before time T" contract runs.available_at already keeps for a parked run.
+func testDelayedDelivery(t *testing.T, s core.Store) {
+	runID := core.RunID("run-outbox-delayed")
+	mustCreateRun(t, s, runID)
+	task := newTask("task-delayed", runID, core.Step(1))
+
+	readyAt := time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)
+	mustTx(t, s, func(ctx context.Context, tx core.Tx) error {
+		if err := tx.CreateTask(ctx, task); err != nil {
+			return err
+		}
+		return tx.EnqueueDelivery(ctx, task.ID, readyAt)
+	})
+
+	before := readyAt.Add(-time.Second)
+	if pending := mustPendingAt(t, s, before, 10); len(pending) != 0 {
+		t.Fatalf("got %d deliveries before their instant, want 0", len(pending))
+	}
+
+	after := readyAt.Add(time.Second)
+	pending := mustPendingAt(t, s, after, 10)
+	if len(pending) != 1 {
+		t.Fatalf("got %d deliveries after their instant, want 1", len(pending))
+	}
+	if pending[0].TaskID != task.ID {
+		t.Fatalf("delivery is for %s, want %s", pending[0].TaskID, task.ID)
+	}
+
+	// Exactly at the instant is ready, not one tick early or late — the same
+	// inclusive comparison runs.available_at makes for a parked run.
+	if pending := mustPendingAt(t, s, readyAt, 10); len(pending) != 1 {
+		t.Fatalf("got %d deliveries exactly at their instant, want 1 (inclusive)", len(pending))
+	}
+}
+
 func mustPending(t *testing.T, s core.Store, limit int) []core.Delivery {
 	t.Helper()
-	out, err := s.PendingDeliveries(context.Background(), limit)
+	return mustPendingAt(t, s, farFuture, limit)
+}
+
+func mustPendingAt(t *testing.T, s core.Store, now time.Time, limit int) []core.Delivery {
+	t.Helper()
+	out, err := s.PendingDeliveries(context.Background(), now, limit)
 	if err != nil {
 		t.Fatalf("PendingDeliveries: %v", err)
 	}

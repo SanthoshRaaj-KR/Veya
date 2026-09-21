@@ -217,7 +217,7 @@ func (f *fixture) commitTask(t *testing.T, id core.TaskID) {
 		}
 		// The task and the intent to announce it, in one transaction, exactly
 		// as the engine writes them.
-		return tx.EnqueueDelivery(ctx, id)
+		return tx.EnqueueDelivery(ctx, id, time.Time{})
 	})
 	if err != nil {
 		t.Fatalf("commit task %s: %v", id, err)

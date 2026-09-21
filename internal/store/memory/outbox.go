@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/SanthoshRaaj-KR/Veya/internal/core"
 )
@@ -16,13 +17,13 @@ import (
 // about what a store remembers or the contract suite is describing two
 // different systems.
 
-func (s *Store) PendingDeliveries(_ context.Context, limit int) ([]core.Delivery, error) {
+func (s *Store) PendingDeliveries(_ context.Context, now time.Time, limit int) ([]core.Delivery, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var out []core.Delivery
 	for _, d := range s.st.deliveries {
-		if !s.st.published[d.ID] {
+		if !s.st.published[d.ID] && (d.AvailableAt.IsZero() || !d.AvailableAt.After(now)) {
 			out = append(out, d)
 		}
 	}
@@ -38,7 +39,7 @@ func (s *Store) PendingDeliveries(_ context.Context, limit int) ([]core.Delivery
 
 // --- transactional writes -------------------------------------------------
 
-func (t *tx) EnqueueDelivery(_ context.Context, taskID core.TaskID) error {
+func (t *tx) EnqueueDelivery(_ context.Context, taskID core.TaskID, availableAt time.Time) error {
 	if _, ok := t.st.tasks[taskID]; !ok {
 		return fmt.Errorf("task %s: %w", taskID, core.ErrNotFound)
 	}
@@ -51,9 +52,10 @@ func (t *tx) EnqueueDelivery(_ context.Context, taskID core.TaskID) error {
 	id := core.DeliveryID(*t.st.deliverySeq)
 
 	t.st.deliveries[id] = core.Delivery{
-		ID:        id,
-		TaskID:    taskID,
-		CreatedAt: t.clock.Now(),
+		ID:          id,
+		TaskID:      taskID,
+		CreatedAt:   t.clock.Now(),
+		AvailableAt: availableAt,
 	}
 	return nil
 }

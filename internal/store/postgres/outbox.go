@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/lib/pq"
 
@@ -22,15 +24,15 @@ import (
 // that question with silence, which reads identically to "never announced".
 // Trimming old published rows belongs with the rest of retention in Layer 6.
 
-const deliveryColumns = `outbox_id, task_id, attempts, COALESCE(last_error, ''), created_at`
+const deliveryColumns = `outbox_id, task_id, attempts, COALESCE(last_error, ''), created_at, available_at`
 
-func (s *Store) PendingDeliveries(ctx context.Context, limit int) ([]core.Delivery, error) {
+func (s *Store) PendingDeliveries(ctx context.Context, now time.Time, limit int) ([]core.Delivery, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+deliveryColumns+`
 		 FROM task_outbox
-		 WHERE published_at IS NULL
+		 WHERE published_at IS NULL AND (available_at IS NULL OR available_at <= $1)
 		 ORDER BY outbox_id
-		 LIMIT $1`, limitOrAll(limit))
+		 LIMIT $2`, now, limitOrAll(limit))
 	if err != nil {
 		return nil, translate("pending deliveries", err)
 	}
@@ -49,25 +51,37 @@ func (s *Store) PendingDeliveries(ctx context.Context, limit int) ([]core.Delive
 
 func scanDelivery(sc scanner) (core.Delivery, error) {
 	var d core.Delivery
-	err := sc.Scan(&d.ID, &d.TaskID, &d.Attempts, &d.LastError, &d.CreatedAt)
-	return d, err
+	var availableAt sql.NullTime
+	if err := sc.Scan(&d.ID, &d.TaskID, &d.Attempts, &d.LastError, &d.CreatedAt, &availableAt); err != nil {
+		return core.Delivery{}, err
+	}
+	if availableAt.Valid {
+		d.AvailableAt = availableAt.Time
+	}
+	return d, nil
 }
 
 // --- transactional writes -------------------------------------------------
 
-// EnqueueDelivery records the intent to hand a task to a worker.
+// EnqueueDelivery records the intent to hand a task to a worker, not before
+// availableAt. The zero time is stored as NULL, which PendingDeliveries reads
+// as ready now, exactly like every row written before this parameter existed.
 //
 // The foreign key on task_id is what turns "announce a task that does not
 // exist" into ErrNotFound rather than a row the relay will trip over later.
-func (t *tx) EnqueueDelivery(ctx context.Context, taskID core.TaskID) error {
+func (t *tx) EnqueueDelivery(ctx context.Context, taskID core.TaskID, availableAt time.Time) error {
 	payload, err := core.EncodeDelivery(taskID)
 	if err != nil {
 		return err
 	}
+	var at sql.NullTime
+	if !availableAt.IsZero() {
+		at = sql.NullTime{Time: availableAt, Valid: true}
+	}
 	_, err = t.tx.ExecContext(ctx,
-		`INSERT INTO task_outbox (task_id, subject, payload, created_at)
-		 VALUES ($1, $2, $3, $4)`,
-		string(taskID), core.DeliverySubject, payload, t.clock.Now())
+		`INSERT INTO task_outbox (task_id, subject, payload, created_at, available_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		string(taskID), core.DeliverySubject, payload, t.clock.Now(), at)
 	return translate(fmt.Sprintf("enqueue delivery for task %s", taskID), err)
 }
 
