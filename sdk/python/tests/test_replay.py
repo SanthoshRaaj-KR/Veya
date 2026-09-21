@@ -11,7 +11,7 @@ import warnings
 
 import pytest
 
-from veya import Fail, NonDeterminismError, agent, tool
+from veya import Cancel, Fail, NonDeterminismError, agent, tool
 from veya.agent import DecisionKind
 from veya.history import PAYLOAD_VERSION, Event, read
 
@@ -207,6 +207,29 @@ def test_fail_is_reported_as_a_deliberate_failure():
     decision = a.decide(history())
     assert decision.kind is DecisionKind.FAIL
     assert decision.error == "not refundable"
+
+
+def test_cancel_is_reported_as_a_deliberate_cancellation():
+    @agent(name="t", version="v1", tools=[])
+    async def a(ctx) -> dict:
+        raise Cancel("the customer withdrew the request")
+
+    decision = a.decide(history())
+    assert decision.kind is DecisionKind.CANCEL
+    assert decision.error == "the customer withdrew the request"
+
+
+def test_an_unexplained_cancel_is_left_unexplained():
+    # Unlike Fail, which invents a reason when the body gave none, an
+    # unexplained Cancel stays that way -- cancelling for no stated reason is
+    # itself something a body can mean.
+    @agent(name="t", version="v1", tools=[])
+    async def a(ctx) -> dict:
+        raise Cancel
+
+    decision = a.decide(history())
+    assert decision.kind is DecisionKind.CANCEL
+    assert decision.error == ""
 
 
 def test_calling_an_unregistered_tool_says_so():

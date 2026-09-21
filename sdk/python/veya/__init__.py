@@ -9,6 +9,7 @@ from __future__ import annotations
 from veya.agent import Agent, Call, Context, Decision, DecisionKind, Join, Outcome, agent
 from veya.effects import Effect, EffectClass, Resolution, ResolutionKind, ToolCall
 from veya.errors import (
+    Cancel,
     Fail,
     NonDeterminismError,
     NotExecuted,
@@ -23,6 +24,7 @@ from veya.tools import Tool, ToolDeclarationError, tool
 __all__ = [
     "Agent",
     "Call",
+    "Cancel",
     "Context",
     "Decision",
     "DecisionKind",

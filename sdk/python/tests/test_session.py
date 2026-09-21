@@ -12,7 +12,7 @@ import threading
 import pytest
 
 from tests.conftest import completed, created, failed, run, started
-from veya import EffectClass, Fail, NotExecuted, Resolution, agent, tool
+from veya import Cancel, EffectClass, Fail, NotExecuted, Resolution, agent, tool
 from veya.worker.v1 import worker_pb2 as pb
 
 # --- an agent to serve ----------------------------------------------------
@@ -213,6 +213,20 @@ def test_a_deliberate_failure_is_reported_as_one(connect):
 
     assert result.decision.kind == pb.DECISION_KIND_FAIL
     assert "not refundable" in result.decision.error
+
+
+def test_a_deliberate_cancellation_carries_its_reason_on_the_wire(connect):
+    @agent(name="quitter", version="v1", tools=[])
+    async def quitter(ctx) -> dict:
+        raise Cancel("the customer withdrew the request")
+
+    service = connect(agent=quitter)
+    result = service.decide(run(agent="quitter"), [started(agent="quitter")])
+
+    assert result.decision.kind == pb.DECISION_KIND_CANCEL
+    assert result.decision.cancel_reason == "the customer withdrew the request"
+    # error is FAIL's field; a CANCEL must not also populate it.
+    assert result.decision.error == ""
 
 
 def test_a_crash_in_the_body_fails_the_run_rather_than_stalling_it(connect):

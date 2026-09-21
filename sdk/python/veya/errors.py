@@ -8,6 +8,7 @@ with an effect.
 from __future__ import annotations
 
 __all__ = [
+    "Cancel",
     "Fail",
     "NonDeterminismError",
     "NotExecuted",
@@ -75,6 +76,22 @@ class Fail(VeyaError):
     Distinct from an unexpected exception only in intent, but the distinction
     is worth having: an operator reading a failed run should be able to tell
     "the agent decided this cannot proceed" from "the agent crashed".
+    """
+
+
+class Cancel(VeyaError):
+    """Raise this from an agent body to end the run cancelled, not failed.
+
+    Cancellation is cooperative and forward-looking: it prevents the *next*
+    durable step, not an effect already in flight, and does not reverse one
+    already committed. Marking a run CANCELLED after an email has been sent
+    records a decision, not an undo -- reversing a committed effect needs an
+    authored compensation, issued as ordinary tool calls before this is
+    raised. See README section 11.
+
+    Distinct from ``Fail`` in the same way ``Fail`` is distinct from a crash:
+    an operator reading history should be able to tell "the agent decided to
+    stop" from "the agent decided this cannot proceed".
     """
 
 

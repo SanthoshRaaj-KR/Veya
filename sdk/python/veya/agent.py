@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from veya.determinism import inspect_body
-from veya.errors import Fail, NonDeterminismError, SignalTimeout, ToolFailed, VeyaError
+from veya.errors import Cancel, Fail, NonDeterminismError, SignalTimeout, ToolFailed, VeyaError
 from veya.history import History, RecordedStep
 from veya.tools import Tool
 
@@ -37,6 +37,7 @@ class DecisionKind(enum.Enum):
     FAIL = "FAIL"
     SLEEP = "SLEEP"
     WAIT_FOR_SIGNAL = "WAIT_FOR_SIGNAL"
+    CANCEL = "CANCEL"
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +131,10 @@ class Decision:
     tool: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     output: Any = None
+
+    # Set when kind is FAIL (the failure message) or CANCEL (the reason, which
+    # may be empty -- cancelling for no stated reason is itself something a
+    # body can mean, unlike failing for no reason).
     error: str = ""
 
     # Set when kind is SLEEP: the instant to wake at, in nanoseconds since the
@@ -542,6 +547,7 @@ class Agent:
         * it reached an unfinished wait  → SLEEP or WAIT_FOR_SIGNAL
         * it returned                    → COMPLETE
         * it raised ``Fail``             → FAIL, deliberately
+        * it raised ``Cancel``           → CANCEL, deliberately
         * it raised ``ToolFailed``       → FAIL, carrying the step that failed
         * it raised anything else        → FAIL, with the exception's message
 
@@ -565,6 +571,11 @@ class Agent:
             return Decision(
                 kind=DecisionKind.FAIL, error=str(deliberate) or "the agent failed the run"
             )
+        except Cancel as cancelled:
+            # Unlike Fail, an unexplained Cancel is left unexplained rather
+            # than given an invented reason -- cancelling for no stated reason
+            # is itself something a body can mean.
+            return Decision(kind=DecisionKind.CANCEL, error=str(cancelled))
         except ToolFailed as failed:
             return Decision(kind=DecisionKind.FAIL, error=str(failed))
         except NonDeterminismError:

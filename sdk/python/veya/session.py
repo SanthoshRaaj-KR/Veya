@@ -55,6 +55,7 @@ _DECISION = {
     DecisionKind.SLEEP: pb.DECISION_KIND_SLEEP,
     DecisionKind.WAIT_FOR_SIGNAL: pb.DECISION_KIND_WAIT_FOR_SIGNAL,
     DecisionKind.CALL_TOOL_PARALLEL: pb.DECISION_KIND_CALL_TOOL_PARALLEL,
+    DecisionKind.CANCEL: pb.DECISION_KIND_CANCEL,
 }
 
 _JOIN = {
@@ -304,7 +305,12 @@ class Worker:
                     tool=decision.tool,
                     payload=_encode(decision.payload) if decision.tool else b"",
                     output=_encode(decision.output),
-                    error=decision.error,
+                    # error and cancel_reason share one Python field but not
+                    # one wire field: FAIL and CANCEL are distinct messages to
+                    # an operator reading history, so each is sent only under
+                    # its own kind.
+                    error=decision.error if decision.kind is DecisionKind.FAIL else "",
+                    cancel_reason=decision.error if decision.kind is DecisionKind.CANCEL else "",
                     wake_at_unix_nano=decision.wake_at_unix_nano,
                     calls=[
                         pb.ToolCall(tool=call.name, payload=_encode(call.payload))
