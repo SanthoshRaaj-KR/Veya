@@ -96,7 +96,17 @@ type JoinPolicy struct {
 // A quorum larger than the fan-out is the mistake worth catching here: it is
 // unsatisfiable from the first instant, so it would park the run until the
 // heat death of the universe with nothing in the logs to suggest why.
+//
+// n <= 0 is refused for every kind, not only QUORUM. A zero-call ALL or ANY
+// is trivially satisfied the instant it is recorded — FanOut.Satisfied has no
+// other way to read "nothing to wait for" — so PendingFanOut would report it
+// as already joined and the body would get no outcomes back for a decision it
+// just made. Rejecting it here keeps that a decider mistake caught at the
+// decision, not a run that silently joins on an empty set.
 func (p JoinPolicy) Valid(n int) error {
+	if n <= 0 {
+		return fmt.Errorf("join policy %s over %d calls: a fan-out needs at least one call", p.Kind, n)
+	}
 	switch p.Kind {
 	case JoinAll, JoinAny:
 		return nil

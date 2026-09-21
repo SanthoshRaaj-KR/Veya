@@ -59,7 +59,7 @@ type Config struct {
 	// and a healthy worker loses work it is still doing, too long and a dead
 	// worker's task sits idle. Both are liveness costs, which is why an
 	// imperfect value here is survivable — README section 16. Per-task-type
-	// TTLs arrive in Layer 5, when an LLM call and a deployment stop deserving
+	// TTLs arrive in Layer 6, when an LLM call and a deployment stop deserving
 	// the same timeout.
 	LeaseTTL time.Duration
 
@@ -585,7 +585,7 @@ func (e *Engine) repark(ctx context.Context, run core.Run, wait core.Wait) error
 const DefaultLeaseTTL = 30 * time.Second
 
 // defaultMaxAttempts is how many times a task may be tried before it is dead
-// lettered. Per-tool retry policy and backoff arrive in Layer 5; until then
+// lettered. Per-tool retry policy and backoff arrive in Layer 6; until then
 // retries are immediate, which is honest but not yet kind to a struggling
 // downstream service.
 const defaultMaxAttempts = 3

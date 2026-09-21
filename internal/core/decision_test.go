@@ -27,13 +27,16 @@ func TestJoinPolicyValidity(t *testing.T) {
 		n      int
 		ok     bool
 	}{
-		"all":            {core.JoinPolicy{Kind: core.JoinAll}, 3, true},
-		"any":            {core.JoinPolicy{Kind: core.JoinAny}, 3, true},
-		"quorum of one":  {core.JoinPolicy{Kind: core.JoinQuorum, Quorum: 1}, 3, true},
-		"quorum of zero": {core.JoinPolicy{Kind: core.JoinQuorum, Quorum: 0}, 3, false},
-		"negative":       {core.JoinPolicy{Kind: core.JoinQuorum, Quorum: -1}, 3, false},
-		"unknown kind":   {core.JoinPolicy{Kind: "MOST"}, 3, false},
-		"empty kind":     {core.JoinPolicy{}, 3, false},
+		"all":              {core.JoinPolicy{Kind: core.JoinAll}, 3, true},
+		"any":              {core.JoinPolicy{Kind: core.JoinAny}, 3, true},
+		"quorum of one":    {core.JoinPolicy{Kind: core.JoinQuorum, Quorum: 1}, 3, true},
+		"quorum of zero":   {core.JoinPolicy{Kind: core.JoinQuorum, Quorum: 0}, 3, false},
+		"negative":         {core.JoinPolicy{Kind: core.JoinQuorum, Quorum: -1}, 3, false},
+		"unknown kind":     {core.JoinPolicy{Kind: "MOST"}, 3, false},
+		"empty kind":       {core.JoinPolicy{}, 3, false},
+		"all, no calls":    {core.JoinPolicy{Kind: core.JoinAll}, 0, false},
+		"any, no calls":    {core.JoinPolicy{Kind: core.JoinAny}, 0, false},
+		"quorum, no calls": {core.JoinPolicy{Kind: core.JoinQuorum, Quorum: 1}, 0, false},
 	}
 
 	for name, tc := range cases {

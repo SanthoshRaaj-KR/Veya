@@ -467,9 +467,11 @@ class Context:
         payload, and raises NonDeterminismError at the step after the one that
         read it.
 
-        A per-step durable clock arrives with durable timers, in Layer 5. Until
-        then this is the honest thing to offer: a time that is real, related to
-        the run, and stable.
+        Durable timers (Layer 5) gave the *engine* a wall clock for sleeps and
+        deadlines, but not the body a per-step clock of its own: recording one
+        would mean treating every read as an effect, which is a Layer 6 sized
+        question, not a Layer 5 one. Until that lands, this is the honest thing
+        to offer: a time that is real, related to the run, and stable.
         """
         started = self._history.events[0].created_at_unix_nano if self._history.events else 0
         if started <= 0:

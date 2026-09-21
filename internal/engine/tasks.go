@@ -134,7 +134,7 @@ func (e *Engine) CompleteTask(ctx context.Context, id core.TaskID, token core.Fe
 // FailTask records a failed tool call, then either retries it or gives up.
 //
 // Retries are immediate and the policy is a fixed attempt count. Backoff,
-// jitter, and per-tool policy arrive in Layer 5; pretending to have them now
+// jitter, and per-tool policy arrive in Layer 6; pretending to have them now
 // would mean writing a scheduler with nothing to schedule against.
 // An escalated outcome is never retried. Retrying would mean either calling a
 // provider that may already have acted, or burning attempts until the task
