@@ -34,6 +34,7 @@ import (
 	"github.com/SanthoshRaaj-KR/Veya/internal/lease"
 	"github.com/SanthoshRaaj-KR/Veya/internal/outbox"
 	"github.com/SanthoshRaaj-KR/Veya/internal/sdk/gateway"
+	"github.com/SanthoshRaaj-KR/Veya/internal/signalhttp"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/memory"
 	"github.com/SanthoshRaaj-KR/Veya/internal/store/postgres"
 	"github.com/SanthoshRaaj-KR/Veya/internal/worker"
@@ -109,6 +110,13 @@ type Config struct {
 	// The gateway is built before the engine, because an agent defined in
 	// another language gets its decider and its tool registry from it.
 	GatewayAddr string
+
+	// SignalAddr is where the HTTP signal endpoint listens. Empty means this
+	// process does not serve it at all -- the same "off unless asked for"
+	// default GatewayAddr uses, for the same reason: a deployment that only
+	// ever sends signals through `veya signal` should not have a second open
+	// port it never uses.
+	SignalAddr string
 
 	// RelayInterval is the outbox relay's backstop period. The engine wakes the
 	// relay on commit, so this only bounds how long work committed by another
@@ -318,6 +326,10 @@ type Stack struct {
 	// something this process connects to or loops over.
 	Gateway *gateway.Server
 
+	// SignalServer is nil unless this process serves HTTP signal ingestion.
+	// Like Gateway, it is something other processes connect to.
+	SignalServer *signalhttp.Server
+
 	Logger *slog.Logger
 }
 
@@ -464,20 +476,33 @@ func Build(ctx context.Context, cfg Config, agent Agent) (*Stack, error) {
 		workers = append(workers, w)
 	}
 
+	var sigSrv *signalhttp.Server
+	if cfg.SignalAddr != "" {
+		sigSrv, err = signalhttp.Listen(cfg.SignalAddr, eng, log)
+		if err != nil {
+			_ = store.Close()
+			if gw != nil {
+				gw.Close()
+			}
+			return nil, fmt.Errorf("wiring: build signal server: %w", err)
+		}
+	}
+
 	return &Stack{
-		Role:       cfg.Role,
-		Store:      store,
-		Dispatcher: dispatcher,
-		Engine:     eng,
-		Runtime:    engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: cfg.ScanInterval}),
-		Tools:      agent.Tools,
-		Executor:   executor,
-		Relay:      relay,
-		Reaper:     reaper,
-		Reconciler: reconciler,
-		Workers:    workers,
-		Gateway:    gw,
-		Logger:     log,
+		Role:         cfg.Role,
+		Store:        store,
+		Dispatcher:   dispatcher,
+		Engine:       eng,
+		Runtime:      engine.NewRuntime(engine.RuntimeConfig{Engine: eng, Interval: cfg.ScanInterval}),
+		Tools:        agent.Tools,
+		Executor:     executor,
+		Relay:        relay,
+		Reaper:       reaper,
+		Reconciler:   reconciler,
+		Workers:      workers,
+		Gateway:      gw,
+		SignalServer: sigSrv,
+		Logger:       log,
 	}, nil
 }
 
@@ -543,6 +568,16 @@ func (s *Stack) Serve(ctx context.Context) {
 			defer wg.Done()
 			if err := s.Gateway.Run(ctx); err != nil {
 				s.Logger.Error("worker gateway exited", "error", err)
+			}
+		}()
+	}
+
+	if s.SignalServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.SignalServer.Run(ctx); err != nil {
+				s.Logger.Error("signal HTTP server exited", "error", err)
 			}
 		}()
 	}

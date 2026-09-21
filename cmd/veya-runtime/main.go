@@ -14,6 +14,7 @@
 //	veya-runtime --demo                     # one demo run, wait for it, exit
 //	veya-runtime --store memory --demo      # same, no database needed
 //	veya-runtime --grpc 127.0.0.1:50551 //	  --agent refund_agent --agent-version v1   # serve an agent defined in Python
+//	veya-runtime --signal-http 127.0.0.1:8089  # also accept signals over HTTP
 package main
 
 import (
@@ -54,6 +55,9 @@ func run() error {
 	fs.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "debug, info, warn or error")
 	fs.StringVar(&cfg.GatewayAddr, "grpc", cfg.GatewayAddr,
 		"serve the worker protocol on this address; empty leaves the port closed")
+	fs.StringVar(&cfg.SignalAddr, "signal-http", cfg.SignalAddr,
+		"serve HTTP signal ingestion on this address; empty leaves the port closed. "+
+			"No authentication -- bind loopback, or put an authenticating proxy in front")
 	agentName := fs.String("agent", agents.Default,
 		"the agent this runtime serves; a name that is not built in is expected from a worker")
 	agentVersion := fs.String("agent-version", "",
@@ -85,7 +89,8 @@ func run() error {
 	stack.Logger.Info("veya-runtime starting",
 		"agent", stack.Engine.Agent(), "version", agent.Version,
 		"store", cfg.Store, "dispatch", cfg.Dispatch,
-		"workers", cfg.Workers, "tools", stack.Tools.Names(), "grpc", cfg.GatewayAddr)
+		"workers", cfg.Workers, "tools", stack.Tools.Names(),
+		"grpc", cfg.GatewayAddr, "signal_http", cfg.SignalAddr)
 
 	if demo {
 		return runDemo(ctx, stack, json.RawMessage(*demoInput))
